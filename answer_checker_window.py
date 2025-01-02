@@ -320,6 +320,9 @@ class AnswerCheckerWindow(QDialog):
         reviewer_did_show_answer.append(self.on_show_answer)
         reviewer_did_answer_card.append(self.on_user_answer_card)
 
+        self.is_initial_answer = True  # Add this line
+        self.is_processing = False     # Add this line
+
     def initialize_webview(self):
         """Initializes the webview with default HTML and sets the background color explicitly."""
         if not self.is_webview_initialized:
@@ -419,6 +422,8 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
             if self.last_difficulty_message:
                 logger.debug("Displaying difficulty message")
                 self.append_to_chat(self.last_difficulty_message)
+
+            self.is_initial_answer = True  # Reset for new card
 
     def closeEvent(self, event):
         """Clean up when window is closed."""
@@ -838,25 +843,70 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             self.append_to_chat(error_html)
 
     def handle_enter_key(self):
-        """빈 입력 필드에서 엔터키 처리"""
-        user_answer = self.input_field.text().strip()
-        logger.debug(f"""
-=== Enter Key Handler ===
-User answer: {user_answer}
-Has last_response: {bool(self.last_response)}
-Current State: {mw.state}
-Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
-""")
+        """처리 빈 입력 필드에서 엔터키"""
+        if self.is_processing:
+            return
+            
+        user_input = self.input_field.text().strip()
         
-        if user_answer == "" and self.last_response:
-            response = json.loads(self.last_response)
-            recommendation = response.get("recommendation", "Unknown").strip()
-            if recommendation != "Unknown":
-                self.follow_llm_suggestion()
-        elif user_answer == "" and not self.last_response:
-            showInfo("답변을 입력하거나 LLM의 평가를 기다려주세요.")
-        elif user_answer != "":
-            self.send_answer()
+        if not user_input and self.last_response:
+            # Empty input with last response - follow LLM suggestion
+            self.follow_llm_suggestion()
+        elif user_input:
+            if self.is_initial_answer:
+                # First input for this card - handle as answer
+                self.is_processing = True
+                self.send_answer()
+                self.is_initial_answer = False
+                self.is_processing = False
+            else:
+                # Follow-up input - handle as question
+                self.process_additional_question(user_input)
+                
+    def process_additional_question(self, question):
+        """Process additional question within the current session"""
+        if self.is_processing:
+            return
+            
+        self.is_processing = True
+        
+        try:
+            # Display user question
+            user_message_html = f"""
+            <div class="user-message-container">
+                <div class="user-message">
+                    <p>{question}</p>
+                </div>
+                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+            </div>
+            """
+            self.append_to_chat(user_message_html)
+            
+            # Show loading animation
+            self.display_loading_animation(True)
+            
+            # Clear input field immediately after displaying message
+            self.input_field.clear()
+            
+            card_content, card_answers, card_ord = self.bridge.get_card_content()
+            if card_content and card_answers:
+                QTimer.singleShot(0, lambda: self.bridge.process_question(card_content, question, card_answers))
+            else:
+                raise Exception("카드 정보를 가져올 수 없습니다.")
+        except Exception as e:
+            logger.exception("Error processing additional question: %s", e)
+            self.display_loading_animation(False)
+            error_html = f"""
+            <div class="system-message-container">
+                <div class="system-message">
+                    <p style='color: red;'>질문 처리 중 오류가 발생했습니다: {str(e)}</p>
+                </div>
+                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+            </div>
+            """
+            self.append_to_chat(error_html)
+        finally:
+            self.is_processing = False
 
     def follow_llm_suggestion(self):
         """LLM의 추천에 따라 난이도 버튼을 클릭하고 UI에 표시합니다."""

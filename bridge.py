@@ -91,6 +91,9 @@ class Bridge(QObject):
         self.llm_provider = None
         self.response_buffer = {}
         self.response_wait_timers = {}
+        self.conversation_history = []  # Add this line
+        self.current_card_id = None    # Add this line
+        self.is_processing = False      # Add this line
 
     def _setup_timer(self):
         """Setup timer with configurations"""
@@ -294,44 +297,59 @@ class Bridge(QObject):
     @pyqtSlot(str)
     def receiveAnswer(self, user_answer):
         """Processes the user's answer received from JavaScript and sends a response."""
-        logger.debug("Received answer from JS: %s", user_answer)
+        if self.is_processing:
+            return
+            
+        self.is_processing = True
         try:
-            # 설정값 로깅 추가
-            settings = QSettings("LLM_response_evaluator", "Settings")
-            easy_threshold = int(settings.value("easyThreshold", "5"))
-            good_threshold = int(settings.value("goodThreshold", "15"))
-            hard_threshold = int(settings.value("hardThreshold", "50"))
-            
-            logger.debug(f"Current threshold settings - Easy: {easy_threshold}s, Good: {good_threshold}s, Hard: {hard_threshold}s")
-            
-            card_content, card_answers, card_ord = self.get_card_content()
-            if not card_content:
-                showInfo("Could not retrieve card information.")
-                response = json.dumps({"evaluation": "Card info error", "recommendation": "None", "answer": "", "reference": ""})
-                self.sendResponse.emit(response)
-                return
+            current_card = mw.reviewer.card
+            if current_card:
+                if self.current_card_id == current_card.id:
+                    # Skip evaluation if we've already evaluated this card
+                    self.is_processing = False
+                    return
+                self.current_card_id = current_card.id
+                
+            logger.debug("Received answer from JS: %s", user_answer)
+            try:
+                # 설정값 로깅 추가
+                settings = QSettings("LLM_response_evaluator", "Settings")
+                easy_threshold = int(settings.value("easyThreshold", "5"))
+                good_threshold = int(settings.value("goodThreshold", "15"))
+                hard_threshold = int(settings.value("hardThreshold", "50"))
+                
+                logger.debug(f"Current threshold settings - Easy: {easy_threshold}s, Good: {good_threshold}s, Hard: {hard_threshold}s")
+                
+                card_content, card_answers, card_ord = self.get_card_content()
+                if not card_content:
+                    showInfo("Could not retrieve card information.")
+                    response = json.dumps({"evaluation": "Card info error", "recommendation": "None", "answer": "", "reference": ""})
+                    self.sendResponse.emit(response)
+                    return
 
-            # 타이머 정지 및 경과 시간 확인
-            elapsed_time = self.stop_timer()
-            logger.debug(f"Elapsed time for this answer: {elapsed_time}s")
-            
-            self.last_elapsed_time = elapsed_time
-            self.last_user_answer = user_answer
-            
-            self.llm_data = {
-                "card_content": card_content,
-                "card_answers": card_answers,
-                "user_answer": user_answer,
-                "elapsed_time": elapsed_time,
-                "card_ord": card_ord
-            }
-            
-            thread = threading.Thread(target=self.process_answer)
-            thread.start()
-        except Exception as e:
-            logger.exception("Error processing receiveAnswer: %s", e)
-            response = json.dumps({"evaluation": "Error occurred", "recommendation": "None", "answer": "", "reference": ""})
-            self.sendResponse.emit(response)
+                # 타이머 정지 및 경과 시간 확인
+                elapsed_time = self.stop_timer()
+                logger.debug(f"Elapsed time for this answer: {elapsed_time}s")
+                
+                self.last_elapsed_time = elapsed_time
+                self.last_user_answer = user_answer
+                
+                self.llm_data = {
+                    "card_content": card_content,
+                    "card_answers": card_answers,
+                    "user_answer": user_answer,
+                    "elapsed_time": elapsed_time,
+                    "card_ord": card_ord
+                }
+                
+                thread = threading.Thread(target=self.process_answer)
+                thread.start()
+            except Exception as e:
+                logger.exception("Error processing receiveAnswer: %s", e)
+                response = json.dumps({"evaluation": "Error occurred", "recommendation": "None", "answer": "", "reference": ""})
+                self.sendResponse.emit(response)
+        finally:
+            self.is_processing = False
 
     def create_llm_message(self, card_content, card_answers, question, request_type):
         """Creates the message to be sent to the LLM API."""
@@ -625,37 +643,54 @@ class Bridge(QObject):
 
     def process_question(self, card_content, question, card_answers):
         """Generates an answer to an additional question in a background thread."""
-        def thread_func():
-            try:
-                system_message, user_message_content = self.create_llm_message(
-                    card_content, 
-                    card_answers, 
-                    question, 
-                    "question"
-                )
-                
-                response = self.call_llm_api(system_message, user_message_content)
-                response_json = json.dumps({"answer": response})
-                
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendQuestionResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, response_json)
-                )
-            except Exception as e:
-                logger.exception("Error processing additional question: %s", e)
-                error_json = json.dumps({"error": str(e)})
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendQuestionResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, error_json)
-                )
+        try:
+            # Update conversation history
+            if not self.conversation_history:
+                # First question in the session
+                self.conversation_history = [
+                    {"role": "system", "content": "You are a helpful assistant providing detailed explanations about Anki cards."},
+                    {"role": "assistant", "content": f"I understand the card content: {card_content}\nCorrect answers: {card_answers}"}
+                ]
+            
+            # Add user question to history
+            self.conversation_history.append({"role": "user", "content": question})
+            
+            # Create conversation context
+            conversation_context = "\n".join([
+                f"{msg['role']}: {msg['content']}" 
+                for msg in self.conversation_history
+            ])
+            
+            # Get LLM response
+            system_message = f"You are a helpful assistant. Previous conversation:\n{conversation_context}"
+            response = self.call_llm_api(system_message, question)
+            
+            # Add response to history
+            self.conversation_history.append({"role": "assistant", "content": response})
+            
+            response_json = json.dumps({"answer": response})
+            QMetaObject.invokeMethod(
+                self,
+                "sendQuestionResponse",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, response_json)
+            )
+            
+        except Exception as e:
+            logger.exception("Error processing additional question: %s", e)
+            error_json = json.dumps({"error": str(e)})
+            QMetaObject.invokeMethod(
+                self,
+                "sendQuestionResponse",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, error_json)
+            )
 
-        # 별도 스레드에서 실행
-        thread = threading.Thread(target=thread_func)
-        thread.start()
+    def clear_conversation_history(self):
+        """Clears the conversation history when moving to a new card"""
+        self.conversation_history = []
+        self.current_card_id = None  # Reset card ID
+        self.is_processing = False   # Reset processing state
 
     def process_joke_request(self, card_content, card_answers):
         """Handles a joke generation request."""
