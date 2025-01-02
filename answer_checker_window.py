@@ -28,8 +28,8 @@ class AnswerCheckerWindow(QDialog):
         self.layout = QVBoxLayout(self)
         self.last_response = None
         self.is_webview_initialized = False
-        self.last_difficulty_message = None  # 인스턴스 변수로 추가
-        self.last_question_time = 0  # 마지막 질문 표시 시간 추적
+        self.last_difficulty_message = None
+        self.last_question_time = 0
         
         self.input_label = QLabel("Enter your answer:")
         self.input_field = QLineEdit()
@@ -42,7 +42,6 @@ class AnswerCheckerWindow(QDialog):
         self.timer_label = QLabel("Elapsed time: 0 seconds") 
         self.layout.addWidget(self.timer_label)
 
-        # Add model and temperature display
         self.model_info_label = QLabel("Model: Unknown, Temperature: Unknown")
         self.layout.addWidget(self.model_info_label)
 
@@ -152,8 +151,6 @@ class AnswerCheckerWindow(QDialog):
             max-width: 75%;
         }
 
-        /* Removed the ::before pseudo-element to eliminate the speech tail */
-
         .system-message-container {
             align-items: flex-start;
         }
@@ -170,22 +167,20 @@ class AnswerCheckerWindow(QDialog):
             max-width: 75%;
         }
 
-        /* Removed the ::before pseudo-element to eliminate the speech tail */
-
         .message-time {
             font-size: 11px;
             color: #8e8e8e;
             margin-top: 4px;
             padding: 0 12px;
-            align-self: flex-end; /* Align to right for user messages */
+            align-self: flex-end;
         }
 
         .user-message-container .message-time {
-            align-self: flex-end; /* Ensure timer is on the right for user messages */
+            align-self: flex-end;
         }
 
         .system-message-container .message-time {
-            align-self: flex-start; /* Ensure timer is on the left for system messages */
+            align-self: flex-start;
         }
 
         .read-status {
@@ -195,13 +190,12 @@ class AnswerCheckerWindow(QDialog):
             margin-right: 12px;
         }
 
-        /* 로딩 애니메이션 스타일 */
         .loading-indicator {
-            background-color: transparent; /* Changed to transparent to fix double white box */
+            background-color: transparent;
             border-radius: 20px;
             padding: 18px;
             margin: 8px 0;
-            box-shadow: none; /* Removed shadow for cleaner appearance */
+            box-shadow: none;
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -234,7 +228,6 @@ class AnswerCheckerWindow(QDialog):
             }
         }
 
-        /* 추가된 추천 클래스 */
         .recommendation-again {
             background-color: red;
             color: white;
@@ -244,7 +237,7 @@ class AnswerCheckerWindow(QDialog):
         }
 
         .recommendation-hard {
-            background-color: #f0ad4e; /* Changed to a darker shade for better text visibility */
+            background-color: #f0ad4e;
             color: white;
             border-radius: 12px;
             padding: 5px 10px;
@@ -267,7 +260,6 @@ class AnswerCheckerWindow(QDialog):
             display: inline-block;
         }
 
-        /* 메시지 내용 스타일 개선 */
         .system-message h2,
         .system-message h3 {
             margin: 0 0 8px 0;
@@ -304,25 +296,16 @@ class AnswerCheckerWindow(QDialog):
         </body>
         </html>
         """
-        # Add Enter key event
         self.input_field.returnPressed.connect(self.handle_enter_key)
-
-        # Connect the new signal
         self.bridge.model_info_changed.connect(self.update_model_info)
-
-        # Update model and temperature info
         self.update_model_info()
-        
-        # Initialize webview
         self.initialize_webview()
-        
-        # 리뷰어 상태 변경 훅 추가
         reviewer_did_show_question.append(self.on_show_question)
         reviewer_did_show_answer.append(self.on_show_answer)
         reviewer_did_answer_card.append(self.on_user_answer_card)
 
-        self.is_initial_answer = True  # Add this line
-        self.is_processing = False     # Add this line
+        self.is_initial_answer = True
+        self.is_processing = False
 
     def initialize_webview(self):
         """Initializes the webview with default HTML and sets the background color explicitly."""
@@ -330,17 +313,11 @@ class AnswerCheckerWindow(QDialog):
             logger.debug("=== WebView Initialization ===")
             self.web_view.setHtml(self.default_html)
             self.is_webview_initialized = True
-            
-            # 웹뷰 설정
             self.web_view.page().setBackgroundColor(Qt.GlobalColor.transparent)
-            
-            # 웹뷰 로드 완료 시그널 연결 전에 현재 상태 저장
             self._saved_messages = []
             if self.last_difficulty_message:
                 self._saved_messages.append(self.last_difficulty_message)
-            
             self.web_view.loadFinished.connect(self.on_webview_loaded)
-            
             if mw.state == "review":
                 logger.debug("State is 'review' - showing review message during initialization")
                 self.show_review_message()
@@ -364,7 +341,6 @@ class AnswerCheckerWindow(QDialog):
         """Shows the review message when in review mode."""
         logger.debug("=== Review Message Display Start ===")
         logger.debug(f"Called from: {self._get_caller_info()}")
-        
         message = """
         <div class="system-message-container">
             <div class="system-message">
@@ -384,15 +360,12 @@ class AnswerCheckerWindow(QDialog):
             if current_time - self.last_question_time < 0.5:
                 logger.debug("Ignoring duplicate question show event")
                 return
-                
             self.last_question_time = current_time
             logger.debug(f"""
 === Question Show Event ===
 Card ID: {card.id}
 Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
-            
-            # 난이도 메시지가 있으면 리뷰 메시지를 표시하지 않음
             if not self.last_difficulty_message:
                 logger.debug("No difficulty message, showing review message")
                 QTimer.singleShot(100, self.show_review_message)
@@ -402,7 +375,6 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
     def on_show_answer(self, card):
         """Called when an answer is shown."""
         if self.isVisible():
-            # 필요한 경우 답안 화면에 대한 특별한 처리를 여기에 추가
             pass
 
     def on_user_answer_card(self, reviewer, card, ease):
@@ -414,19 +386,13 @@ Card ID: {card.id}
 Ease: {ease}
 Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
-            # Clear conversation history when moving to new card
             self.bridge.clear_conversation_history()
-            
-            # Clear UI
             self.clear_chat()
             self.input_field.clear()
             self.input_field.setFocus()
-            
-            # Show saved messages if any
             if self.last_difficulty_message:
                 logger.debug("Displaying difficulty message")
                 self.append_to_chat(self.last_difficulty_message)
-
             self.is_initial_answer = True
 
     def closeEvent(self, event):
@@ -445,7 +411,6 @@ Current State: {mw.state}
 Has last_response: {bool(self.last_response)}
 Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
-        
         if show:
             loading_animation_html = f"""
             <div class="system-message-container">
@@ -463,7 +428,6 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             self.append_to_chat(loading_animation_html)
         else:
             logger.debug("Attempting to remove loading animation")
-            # Remove the loading animation
             script = """
             (function() {
                 var loadingIndicators = document.querySelectorAll('.loading-indicator');
@@ -493,30 +457,41 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         """Updates the elapsed time in the UI."""
         self.timer_label.setText(f"Elapsed time: {elapsed_time} seconds")
 
+    def get_recommendation_class(self, recommendation):
+        """Returns the CSS class for the recommendation."""
+        recommendation_classes = {
+            "Again": "recommendation-again",
+            "Hard": "recommendation-hard",
+            "Good": "recommendation-good",
+            "Easy": "recommendation-easy"
+        }
+        return recommendation_classes.get(recommendation, "")
+
+    def handle_response_error(self, error_message, error_detail):
+        """Handles errors during response processing."""
+        logger.error(f"{error_message}: {error_detail}")
+        error_html = f"""
+        <div class="system-message-container">
+            <div class="system-message">
+                <p style='color: red;'>{error_message}</p>
+            </div>
+            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+        </div>
+        """
+        self.append_to_chat(error_html)
+        QTimer.singleShot(0, lambda: showInfo(error_message))
+
     def display_response(self, response_json):
         """Displays the LLM response in the webview."""
         try:
-            # AI 응답 로딩 애니메이션 제거
             self.display_loading_animation(False)
-
             response = json.loads(response_json)
             evaluation = response.get("evaluation", "No evaluation")
             recommendation = response.get("recommendation", "No recommendation")
             answer = response.get("answer", "")
             reference = response.get("reference", "")
             self.last_response = response_json
-
-            # Determine the recommendation class based on the recommendation text
-            recommendation_class = ""
-            if recommendation == "Again":
-                recommendation_class = "recommendation-again"
-            elif recommendation == "Hard":
-                recommendation_class = "recommendation-hard"
-            elif recommendation == "Good":
-                recommendation_class = "recommendation-good"
-            elif recommendation == "Easy":
-                recommendation_class = "recommendation-easy"
-
+            recommendation_class = self.get_recommendation_class(recommendation)
             html_content = f"""
             <div class="system-message-container">
                 <div class="system-message">
@@ -530,65 +505,21 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             </div>
             """
             self.append_to_chat(html_content)
-            
         except json.JSONDecodeError as e:
-            logger.error(f"JSON 파싱 오류: {str(e)}")
-            error_message = "응답 처리 중 오류가 발생했습니다. 다시 시도해주세요."
-            error_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p style='color: red;'>{error_message}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(error_html)
-            # 에러 다이얼로그를 비동기로 표시
-            QTimer.singleShot(0, lambda: showInfo(error_message))
-            
+            self.handle_response_error("JSON 파싱 오류", str(e))
         except Exception as e:
-            logger.exception("Error processing response")
-            error_message = "예기치 않은 오류가 발생했습니다. 다시 시도해주세요."
-            error_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p style='color: red;'>{error_message}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(error_html)
-            # 에러 다이얼로그를 비동기로 표시
-            QTimer.singleShot(0, lambda: showInfo(error_message))
+            self.handle_response_error("예기치 않은 오류", str(e))
 
     def display_question_response(self, response_json):
         """Displays the response to an additional question."""
-        # AI 응답 로딩 애니메이션 제거
         self.display_loading_animation(False)
-
         try:
             response = json.loads(response_json)
             if "error" in response:
-                answer_html = f"""
-                <div class="system-message-container">
-                    <div class="system-message">
-                        <p style='color: red;'>오류: {response['error']}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
+                answer_html = self.get_error_html(response['error'])
             else:
                 recommendation = response.get("recommendation", "")
-                recommendation_class = ""
-                if recommendation == "Again":
-                    recommendation_class = "recommendation-again"
-                elif recommendation == "Hard":
-                    recommendation_class = "recommendation-hard"
-                elif recommendation == "Good":
-                    recommendation_class = "recommendation-good"
-                elif recommendation == "Easy":
-                    recommendation_class = "recommendation-easy"
-
+                recommendation_class = self.get_recommendation_class(recommendation)
                 answer = response.get("answer", "답변 없음")
                 answer_html = f"""
                 <div class="system-message-container">
@@ -601,35 +532,16 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 </div>
                 """
             self.append_to_chat(answer_html)
-
         except Exception as e:
-            logger.exception("Error processing additional question response: %s", e)
-            error_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p style='color: red;'>추가 질문 처리 중 오류가 발생했습니다.</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(error_html)
+            self.handle_response_error("추가 질문 처리 중 오류", str(e))
 
     def display_joke(self, response_json):
         """Displays the joke in the webview."""
-        # AI 응답 로딩 애니메이션 제거
         self.display_loading_animation(False)
-
         try:
             response = json.loads(response_json)
             if "error" in response:
-                joke_html = f"""
-                <div class="system-message-container">
-                    <div class="system-message">
-                        <p style='color: red;'>오류: {response['error']}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
+                joke_html = self.get_error_html(response['error'])
             else:
                 joke = response.get("joke", "농담 생성 실패")
                 joke_html = f"""
