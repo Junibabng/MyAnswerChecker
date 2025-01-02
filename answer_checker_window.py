@@ -647,7 +647,6 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def display_edit_advice(self, response_json):
         """Displays the card edit advice in the webview."""
-        # AI 응답 로딩 애니메이션 제거
         self.display_loading_animation(False)
 
         try:
@@ -662,23 +661,11 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 </div>
                 """
             else:
-                recommendation = response.get("recommendation", "").strip()
-                recommendation_class = ""
-                if recommendation == "Again":
-                    recommendation_class = "recommendation-again"
-                elif recommendation == "Hard":
-                    recommendation_class = "recommendation-hard"
-                elif recommendation == "Good":
-                    recommendation_class = "recommendation-good"
-                elif recommendation == "Easy":
-                    recommendation_class = "recommendation-easy"
-
-                # Enhanced recommendation message with color
+                edit_advice = response.get("edit_advice", "조언을 생성할 수 없습니다.")
                 advice_html = f"""
                 <div class="system-message-container">
                     <div class="system-message">
                         <h3>카드 수정 조언 ✏️</h3>
-                        <span class="{recommendation_class}">{recommendation}</span>
                         <p>{self.markdown_to_html(edit_advice)}</p>
                     </div>
                     <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
@@ -691,7 +678,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             error_html = f"""
             <div class="system-message-container">
                 <div class="system-message">
-                    <p style='color: red;'>카드 수정 조언 표시 중 오류가 발생했습니다.</p>
+                    <p style='color: red;'>카드 수정 조언 표시 중 오류가 발생했습니다: {str(e)}</p>
                 </div>
                 <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
             </div>

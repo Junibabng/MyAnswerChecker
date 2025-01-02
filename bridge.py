@@ -780,6 +780,7 @@ class Bridge(QObject):
                 )
                 
                 response = self.call_llm_api(system_message, user_message_content)
+                # edit_advice 키로 간단화된 응답 구조
                 response_json = json.dumps({"edit_advice": response})
                 
                 QMetaObject.invokeMethod(
@@ -798,7 +799,6 @@ class Bridge(QObject):
                     Q_ARG(str, error_json)
                 )
 
-        # 별도 스레드에서 실행
         thread = threading.Thread(target=thread_func)
         thread.start()
 
