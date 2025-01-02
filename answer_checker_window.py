@@ -414,17 +414,20 @@ Card ID: {card.id}
 Ease: {ease}
 Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
-            # 채팅창 초기화
+            # Clear conversation history when moving to new card
+            self.bridge.clear_conversation_history()
+            
+            # Clear UI
             self.clear_chat()
             self.input_field.clear()
             self.input_field.setFocus()
             
-            # 난이도 메시지 표시 (있는 경우)
+            # Show saved messages if any
             if self.last_difficulty_message:
                 logger.debug("Displaying difficulty message")
                 self.append_to_chat(self.last_difficulty_message)
 
-            self.is_initial_answer = True  # Reset for new card
+            self.is_initial_answer = True
 
     def closeEvent(self, event):
         """Clean up when window is closed."""
@@ -696,7 +699,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         if text is None:
             return ""
         text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
-        text = text.replace('\n', '<br>')
+        text.replace('\n', '<br>')
         return text
 
     def send_answer(self):
@@ -873,6 +876,13 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         self.is_processing = True
         
         try:
+            logger.debug(f"""
+=== Processing Additional Question ===
+Question: {question}
+Current Card ID: {self.bridge.current_card_id}
+Chat History Length: {len(self.bridge.conversation_history['messages'])}
+""")
+            
             # Display user question
             user_message_html = f"""
             <div class="user-message-container">
@@ -887,10 +897,9 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             # Show loading animation
             self.display_loading_animation(True)
             
-            # Clear input field immediately after displaying message
+            # Clear input field
             self.input_field.clear()
             
-            # Get card content in main thread
             def get_card_info():
                 try:
                     return self.bridge.get_card_content()
@@ -898,7 +907,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                     logger.error(f"Error getting card content: {e}")
                     return None, None, None
 
-            # Use QTimer to process in the next event loop iteration
+            # Process in next event loop iteration
             QTimer.singleShot(0, lambda: self._continue_question_processing(question, get_card_info()))
             
         except Exception as e:

@@ -91,7 +91,12 @@ class Bridge(QObject):
         self.llm_provider = None
         self.response_buffer = {}
         self.response_wait_timers = {}
-        self.conversation_history = []  # Add this line
+        self.conversation_history = {
+            'messages': [],
+            'card_context': None,
+            'current_card_id': None
+        }
+        self.max_context_length = 10  # 최대 대화 기록 수
         self.current_card_id = None    # Add this line
         self.is_processing = False      # Add this line
 
@@ -644,18 +649,52 @@ class Bridge(QObject):
     def process_question(self, card_content, question, card_answers):
         """Generates an answer to an additional question."""
         try:
+            logger.debug("=== Processing Additional Question ===")
+            logger.debug(f"Question: {question}")
+            logger.debug(f"Current context length: {len(self.conversation_history['messages'])}")
+            
+            # Update conversation history
+            if self.current_card_id != self.conversation_history['current_card_id']:
+                logger.debug("New card detected - clearing conversation history")
+                self.conversation_history['messages'] = []
+                self.conversation_history['card_context'] = {
+                    'content': card_content,
+                    'answers': card_answers
+                }
+                self.conversation_history['current_card_id'] = self.current_card_id
+            
+            # Add user question to history
+            self.conversation_history['messages'].append({
+                'role': 'user',
+                'content': question
+            })
+            
+            # Build conversation context
+            context_messages = []
+            if self.conversation_history['card_context']:
+                context_messages.append(f"Card Content: {self.conversation_history['card_context']['content']}")
+                context_messages.append(f"Correct Answer(s): {self.conversation_history['card_context']['answers']}")
+            
+            for msg in self.conversation_history['messages'][-self.max_context_length:]:
+                context_messages.append(f"{msg['role'].title()}: {msg['content']}")
+            
+            context = "\n".join(context_messages)
+            logger.debug(f"Built conversation context (truncated): {context[:200]}...")
+            
             # Get response from LLM
-            system_message, user_message_content = self.create_llm_message(
-                card_content, 
-                card_answers, 
-                question, 
-                "question"
-            )
+            system_message = f"You are a helpful assistant. Previous conversation:\n{context}"
+            response = self.call_llm_api(system_message, question)
             
-            response = self.call_llm_api(system_message, user_message_content)
+            # Add assistant response to history
+            self.conversation_history['messages'].append({
+                'role': 'assistant',
+                'content': response
+            })
             
-            # Emit response through Qt signal
+            # Emit response
             response_json = json.dumps({"answer": response})
+            logger.debug(f"Sending response (truncated): {response[:200]}...")
+            
             QMetaObject.invokeMethod(
                 self,
                 "sendQuestionResponse",
@@ -674,10 +713,20 @@ class Bridge(QObject):
             )
 
     def clear_conversation_history(self):
-        """Clears the conversation history when moving to a new card"""
-        self.conversation_history = []
-        self.current_card_id = None  # Reset card ID
-        self.is_processing = False   # Reset processing state
+        """Clears the conversation history"""
+        logger.debug("Clearing conversation history")
+        self.conversation_history = {
+            'messages': [],
+            'card_context': None,
+            'current_card_id': None
+        }
+
+    def _get_chat_content(self):
+        """Get formatted chat content for context"""
+        messages = []
+        for msg in self.conversation_history['messages']:
+            messages.append(f"{msg['role'].title()}: {msg['content']}")
+        return "\n".join(messages)
 
     def process_joke_request(self, card_content, card_answers):
         """Handles a joke generation request."""
