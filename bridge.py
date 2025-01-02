@@ -642,32 +642,19 @@ class Bridge(QObject):
             self._clear_llm_data()
 
     def process_question(self, card_content, question, card_answers):
-        """Generates an answer to an additional question in a background thread."""
+        """Generates an answer to an additional question."""
         try:
-            # Update conversation history
-            if not self.conversation_history:
-                # First question in the session
-                self.conversation_history = [
-                    {"role": "system", "content": "You are a helpful assistant providing detailed explanations about Anki cards."},
-                    {"role": "assistant", "content": f"I understand the card content: {card_content}\nCorrect answers: {card_answers}"}
-                ]
+            # Get response from LLM
+            system_message, user_message_content = self.create_llm_message(
+                card_content, 
+                card_answers, 
+                question, 
+                "question"
+            )
             
-            # Add user question to history
-            self.conversation_history.append({"role": "user", "content": question})
+            response = self.call_llm_api(system_message, user_message_content)
             
-            # Create conversation context
-            conversation_context = "\n".join([
-                f"{msg['role']}: {msg['content']}" 
-                for msg in self.conversation_history
-            ])
-            
-            # Get LLM response
-            system_message = f"You are a helpful assistant. Previous conversation:\n{conversation_context}"
-            response = self.call_llm_api(system_message, question)
-            
-            # Add response to history
-            self.conversation_history.append({"role": "assistant", "content": response})
-            
+            # Emit response through Qt signal
             response_json = json.dumps({"answer": response})
             QMetaObject.invokeMethod(
                 self,

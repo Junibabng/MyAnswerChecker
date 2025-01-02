@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QHBoxLayout, QInputDialog, QDoubleSpinBox, QSpinBox, QComboBox, QGroupBox
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtCore import QTimer, Qt, QThread
+from PyQt6.QtCore import QTimer, Qt, QThread, QMetaObject, Q_ARG, pyqtSlot
 from PyQt6.QtWebChannel import QWebChannel
 from aqt import mw, gui_hooks
 from aqt.utils import showInfo
@@ -15,6 +15,7 @@ import json
 import re
 import time
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -866,6 +867,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
     def process_additional_question(self, question):
         """Process additional question within the current session"""
         if self.is_processing:
+            logger.debug("Skipping question processing - already processing")
             return
             
         self.is_processing = True
@@ -888,25 +890,81 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             # Clear input field immediately after displaying message
             self.input_field.clear()
             
-            card_content, card_answers, card_ord = self.bridge.get_card_content()
-            if card_content and card_answers:
-                QTimer.singleShot(0, lambda: self.bridge.process_question(card_content, question, card_answers))
-            else:
-                raise Exception("카드 정보를 가져올 수 없습니다.")
+            # Get card content in main thread
+            def get_card_info():
+                try:
+                    return self.bridge.get_card_content()
+                except Exception as e:
+                    logger.error(f"Error getting card content: {e}")
+                    return None, None, None
+
+            # Use QTimer to process in the next event loop iteration
+            QTimer.singleShot(0, lambda: self._continue_question_processing(question, get_card_info()))
+            
         except Exception as e:
-            logger.exception("Error processing additional question: %s", e)
+            logger.exception("Error in process_additional_question: %s", e)
             self.display_loading_animation(False)
-            error_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p style='color: red;'>질문 처리 중 오류가 발생했습니다: {str(e)}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(error_html)
-        finally:
+            self._show_error_message("질문 처리 중 오류가 발생했습니다.")
             self.is_processing = False
+
+    def _continue_question_processing(self, question, card_info):
+        """Continue processing the question after getting card info"""
+        try:
+            card_content, card_answers, card_ord = card_info
+            if not card_content or not card_answers:
+                raise Exception("카드 정보를 가져올 수 없습니다.")
+
+            # Process question in background thread
+            thread = threading.Thread(
+                target=self._process_question_thread,
+                args=(card_content, question, card_answers)
+            )
+            thread.daemon = True  # Make thread daemonic
+            thread.start()
+
+        except Exception as e:
+            logger.exception("Error in _continue_question_processing: %s", e)
+            self.display_loading_animation(False)
+            self._show_error_message(str(e))
+            self.is_processing = False
+
+    def _process_question_thread(self, card_content, question, card_answers):
+        """Process the question in a background thread"""
+        try:
+            self.bridge.process_question(card_content, question, card_answers)
+        except Exception as e:
+            logger.exception("Error in question processing thread: %s", e)
+            QMetaObject.invokeMethod(
+                self,
+                "_show_error_message",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, str(e))
+            )
+        finally:
+            QMetaObject.invokeMethod(
+                self,
+                "_finish_processing",
+                Qt.ConnectionType.QueuedConnection
+            )
+
+    @pyqtSlot()
+    def _finish_processing(self):
+        """Reset processing state"""
+        self.is_processing = False
+        self.display_loading_animation(False)
+
+    @pyqtSlot(str)
+    def _show_error_message(self, message):
+        """Show error message in chat"""
+        error_html = f"""
+        <div class="system-message-container">
+            <div class="system-message">
+                <p style='color: red;'>{message}</p>
+            </div>
+            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+        </div>
+        """
+        self.append_to_chat(error_html)
 
     def follow_llm_suggestion(self):
         """LLM의 추천에 따라 난이도 버튼을 클릭하고 UI에 표시합니다."""
