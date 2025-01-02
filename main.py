@@ -27,25 +27,25 @@ from aqt.gui_hooks import (
 # Logging setup (Corrected)
 import logging
 import os
+from aqt import mw
+from aqt.qt import QSettings
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QGroupBox
+from .providers import OpenAIProvider, GeminiProvider
 
+# Setup logging
 addon_dir = os.path.dirname(os.path.abspath(__file__))
 log_file_path = os.path.join(addon_dir, 'MyAnswerChecker_debug.log')
 os.makedirs(addon_dir, exist_ok=True)
 
-# Create a logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Set the minimum logging level
+logger.setLevel(logging.DEBUG)
 
-# Create a file handler
-file_handler = logging.FileHandler(log_file_path)
-file_handler.setLevel(logging.DEBUG)  # Set the minimum logging level for the file handler
-
-# Create a formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-
-# Add the file handler to the logger
-logger.addHandler(file_handler)
+if not logger.handlers:
+    file_handler = logging.FileHandler(log_file_path)
+    file_handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
 logger.info("Addon load start")
 
@@ -63,79 +63,6 @@ class LLMProvider(ABC):
     @abstractmethod
     def call_api(self, system_message, user_message, temperature=0.2):
         pass
-
-class OpenAIProvider(LLMProvider):
-    def __init__(self, api_key, base_url, model_name):
-        self.api_key = api_key
-        self.base_url = base_url
-        self.model_name = model_name
-
-    def call_api(self, system_message, user_message, temperature=0.2):
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        data = {
-            "model": self.model_name,
-            "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
-            "temperature": temperature
-        }
-        response = requests.post(f"{self.base_url}/v1/chat/completions", headers=headers, json=data)
-        response.raise_for_status()
-        result = response.json()
-        return result['choices'][0]['message']['content'].strip()
-
-class GeminiProvider(LLMProvider):
-    def __init__(self, api_key, model_name="gemini-2.0-flash-exp"):
-        self.api_key = api_key
-        self.model_name = model_name
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-
-    def call_api(self, system_message, user_message, temperature=0.2):
-        headers = {
-            "Content-Type": "application/json"
-        }
-        
-        data = {
-            "contents": [{
-                "role": "user",
-                "parts": [{
-                    "text": user_message
-                }]
-            }],
-            "systemInstruction": {
-                "role": "user",
-                "parts": [{
-                    "text": system_message
-                }]
-            },
-            "generationConfig": {
-                "temperature": temperature,
-                "topK": 40,
-                "topP": 0.95,
-                "maxOutputTokens": 8192,
-                "responseMimeType": "text/plain"
-            }
-        }
-        
-        url = f"{self.base_url}/models/{self.model_name}:generateContent?key={self.api_key}"
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        result = response.json()
-
-        # Gemini Flash Thinking 모델의 경우 사고 과정 제외
-        if "flash-thinking" in self.model_name.lower():
-            if result.get('candidates') and result['candidates'][0].get('content', {}).get('parts'):
-                parts = result['candidates'][0]['content']['parts']
-                # 첫 번째 부분(사고 과정)을 제외한 나머지 부분을 결합
-                final_response = " ".join(part.get('text', '').strip() for part in parts[1:])
-                return final_response.strip()
-        
-        # 일반 Gemini 모델의 경우 기존 처리 방식 유지
-        return result['candidates'][0]['content']['parts'][0]['text'].strip()
 
 from .bridge import Bridge
 from .answer_checker_window import AnswerCheckerWindow
@@ -226,19 +153,24 @@ from aqt.qt import *
 def load_settings():
     """Loads settings from QSettings with default values."""
     settings = QSettings("LLM_response_evaluator", "Settings")
-    return {
-        "apiKey": settings.value("apiKey", ""),
-        "baseUrl": settings.value("baseUrl", "https://api.openai.com"),
-        "modelName": settings.value("modelName", "gpt-4o-mini"),
-        "easyThreshold": int(settings.value("easyThreshold", "5")),
-        "goodThreshold": int(settings.value("goodThreshold", "15")),
-        "hardThreshold": int(settings.value("hardThreshold", "50")),
-        "language": settings.value("language", "English")
+    defaults = {
+        "apiKey": "",
+        "baseUrl": "https://api.openai.com",
+        "modelName": "gpt-4o-mini",
+        "easyThreshold": 5,
+        "goodThreshold": 15,
+        "hardThreshold": 50,
+        "language": "English",
+        "temperature": 0.2,
+        "providerType": "openai"
     }
+    
+    return {key: settings.value(key, default) for key, default in defaults.items()}
 
 def load_global_settings():
-    """Loads global settings into a global variable."""
+    """Loads global settings into mw.llm_addon_settings"""
     mw.llm_addon_settings = load_settings()
+    logger.debug("Global settings loaded")
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
