@@ -311,43 +311,46 @@ class AnswerCheckerWindow(QDialog):
             self.is_webview_initialized = True
             self.web_view.page().setBackgroundColor(Qt.GlobalColor.transparent)
             self._saved_messages = []
+            
+            # 웹뷰 로드 완료 이벤트 연결
+            self.web_view.loadFinished.connect(self._on_initial_load)
+            
             if self.last_difficulty_message:
                 self._saved_messages.append(self.last_difficulty_message)
-            self.web_view.loadFinished.connect(self.on_webview_loaded)
-            if mw.state == "review":
-                logger.debug("State is 'review' - showing review message during initialization")
-                self.show_review_message()
-            else:
-                logger.debug("State is not 'review' - showing default message")
-                self.show_default_message()
+
+    def _on_initial_load(self, ok):
+        """웹뷰 초기 로드가 완료되었을 때 호출됩니다."""
+        if ok:
+            logger.debug("WebView initial load completed successfully")
+            # 초기 메시지 표시
+            welcome_message = """
+            <div class="system-message-container">
+                <div class="system-message">
+                    <p>카드 리뷰를 진행해주세요.</p>
+                    <p class="sub-text">답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요.</p>
+                </div>
+                <div class="message-time">{}</div>
+            </div>
+            """.format(datetime.now().strftime("%p %I:%M"))
+            
+            self.append_to_chat(welcome_message)
+            
+            # 마지막 난이도 메시지가 있다면 표시
+            if self.last_difficulty_message:
+                self.append_to_chat(self.last_difficulty_message)
+            
+            # 입력 필드에 포커스
+            self.input_field.setFocus()
+        else:
+            logger.error("WebView initial load failed")
 
     def show_default_message(self):
-        """Shows the default message when not in review mode."""
-        message = """
-        <div class="system-message-container">
-            <div class="system-message">
-                <p>리뷰를 시작하려면 카드 덱을 선택해주세요.</p>
-            </div>
-            <div class="message-time">{}</div>
-        </div>
-        """.format(datetime.now().strftime("%p %I:%M"))
-        self.append_to_chat(message)
+        """기본 메시지를 표시합니다."""
+        pass  # 초기 로드 시 _on_initial_load에서 처리하므로 여기서는 아무것도 하지 않습니다.
 
     def show_review_message(self):
-        """Shows the review message when in review mode."""
-        logger.debug("=== Review Message Display Start ===")
-        logger.debug(f"Called from: {self._get_caller_info()}")
-        message = """
-        <div class="system-message-container">
-            <div class="system-message">
-                <p>카드 리뷰를 진행해주세요.</p>
-                <p class="sub-text">답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요.</p>
-            </div>
-            <div class="message-time">{}</div>
-        </div>
-        """.format(datetime.now().strftime("%p %I:%M"))
-        logger.debug("Showing review message")
-        self.append_to_chat(message)
+        """리뷰 메시지를 표시합니다."""
+        pass  # 초기 로드 시 _on_initial_load에서 처리하므로 여기서는 아무것도 하지 않습니다.
 
     def on_show_question(self, card):
         """새로운 질문이 표시될 때 호출됩니다."""

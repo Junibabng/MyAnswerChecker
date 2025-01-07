@@ -29,13 +29,15 @@ class RetryWithExponentialBackoff:
         return wrapper
 
 class LLMProvider(ABC):
+    """LLM 서비스 호출을 위한 추상 기본 클래스"""
     @abstractmethod
     def call_api(self, system_message, user_message, temperature=0.2):
+        """LLM API를 호출하여 응답을 받아옵니다."""
         pass
 
     @RetryWithExponentialBackoff()
     def _make_api_request(self, headers, data, url=None):
-        """Make API request with exponential backoff retry"""
+        """API 요청을 보내고 응답을 받아옵니다."""
         if url is None:
             url = f"{self.base_url}/v1/chat/completions"
             
@@ -44,6 +46,7 @@ class LLMProvider(ABC):
         return response.json()
 
 class OpenAIProvider(LLMProvider):
+    """OpenAI API를 사용하는 LLM 프로바이더"""
     def __init__(self, api_key, base_url, model_name):
         self.api_key = api_key
         self.base_url = base_url
@@ -70,6 +73,7 @@ class OpenAIProvider(LLMProvider):
             raise
 
 class GeminiProvider(LLMProvider):
+    """Google Gemini API를 사용하는 LLM 프로바이더"""
     def __init__(self, api_key, model_name="gemini-2.0-flash-exp"):
         self.api_key = api_key
         self.model_name = model_name
@@ -106,14 +110,11 @@ class GeminiProvider(LLMProvider):
         
         try:
             result = self._make_api_request(headers, data, url)
-            # Gemini Flash Thinking 모델의 경우 사고 과정 제외
             if "flash-thinking" in self.model_name.lower():
                 if result.get('candidates') and result['candidates'][0].get('content', {}).get('parts'):
                     parts = result['candidates'][0]['content']['parts']
-                    # 첫 번째 부분(사고 과정)을 제외한 나머지 부분을 결합
                     final_response = " ".join(part.get('text', '').strip() for part in parts[1:])
                     return final_response.strip()
-            # 일반 Gemini 모델의 경우 기존 처리 방식 유지
             return result['candidates'][0]['content']['parts'][0]['text'].strip()
         except Exception as e:
             logger.exception("Gemini API call failed: %s", e)
