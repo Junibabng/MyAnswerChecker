@@ -23,7 +23,7 @@ def initialize_addon():
             load_global_settings()
             register_hooks()
             add_menu()
-            logger.info("Addon initialized successfully")
+            logger.info("Addon initialized successfully with JSON buffering")
     except Exception as e:
         logger.error(f"Error initializing addon: {str(e)}")
         showWarning(f"Error initializing addon: {str(e)}")

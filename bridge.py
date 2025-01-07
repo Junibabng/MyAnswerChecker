@@ -79,6 +79,7 @@ class Bridge(QObject):
         self._initialize_attributes()
         self._setup_timer()
         self.update_llm_provider()
+        self.partial_response = ""  # JSON 버퍼 추가
 
     def _initialize_attributes(self):
         """Initialize all instance attributes"""
@@ -123,16 +124,24 @@ class Bridge(QObject):
             del self.response_wait_timers[request_id]
 
     def _process_complete_response(self, response_text):
-        """Process complete response and update UI"""
+        """완전한 응답을 처리하고 UI를 업데이트"""
         try:
-            response_json = json.loads(response_text)
+            complete_json = self.partial_response + response_text
+            response_json = json.loads(complete_json)
+            self.partial_response = ""  # 성공적으로 로드되면 버퍼 초기화
             html_content = self._generate_response_html(response_json)
             if answer_checker_window:
                 answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
             return True
         except json.JSONDecodeError:
-            logger.error("Failed to parse complete JSON response")
+            # JSON이 완전하지 않으면 버퍼에 추가
+            self.partial_response += response_text
+            logger.warning("Incomplete JSON received, buffering...")
             return False
+        except Exception:
+            # 기타 예외 처리
+            logger.exception("예기치 않은 오류")
+            self._clear_request_data(request_id)
 
     def _generate_response_html(self, response_json):
         """Generate HTML content from response JSON"""

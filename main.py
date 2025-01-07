@@ -383,3 +383,37 @@ def showInfo(message):
             anki_showInfo(message)
     except Exception as e:
         logger.error(f"Error showing info dialog: {str(e)}")
+
+# ...existing code...
+# ...existing code...
+    def handle_response_error(self, error_message, error_detail):
+        """Handles errors during response processing"""
+        logger.error(f"{error_message}: {error_detail}")
+        error_html = f"""
+        <div class="system-message-container">
+            <div class="system-message">
+                <p style='color: red;'>{error_message}</p>
+            </div>
+            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+        </div>
+        """
+        self.append_to_chat(error_html)
+        QTimer.singleShot(0, lambda: showInfo(error_message))
+# ...existing code...
+
+        def _process_complete_response(self, response_text):
+            """Process complete response and update UI"""
+            try:
+                complete_json = self.partial_response + response_text
+                response_json = json.loads(complete_json)
+                self._clear_request_data(request_id)
+# ...existing code...
+
+            except json.JSONDecodeError:
+                logger.warning("Incomplete JSON received, buffering...")
+            except Exception as e:
+                logger.exception("Unexpected error")
+                # Buffer incomplete JSON
+                self.partial_response += response_text
+                self.partial_response = ""  # Reset buffer after successful parse
+                # ...existing response 처리 로직...

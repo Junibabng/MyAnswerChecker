@@ -1,4 +1,3 @@
-
 import requests
 import logging
 import os
@@ -81,3 +80,7 @@ class GeminiProvider(LLMProvider):
         
         # 일반 Gemini 모델의 경우 기존 처리 방식 유지
         return result['candidates'][0]['content']['parts'][0]['text'].strip()
+
+    def stream_response(self, data_chunk):
+        """스트리밍된 데이터 청크를 처리"""
+        self.bridge._process_complete_response(data_chunk)
