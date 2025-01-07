@@ -35,7 +35,6 @@ class AnswerCheckerWindow(QDialog):
         self.input_field = QLineEdit()
         self.send_button = QPushButton("Send")
 
-        self.additional_question_button = QPushButton("Additional Question")
         self.joke_button = QPushButton("Joke 😆")
         self.edit_advice_button = QPushButton("Card Edit ✏️")
         
@@ -58,7 +57,6 @@ class AnswerCheckerWindow(QDialog):
         self.layout.addLayout(input_layout)
 
         buttons_layout = QHBoxLayout()
-        buttons_layout.addWidget(self.additional_question_button)
         buttons_layout.addWidget(self.joke_button)
         buttons_layout.addWidget(self.edit_advice_button)
         self.layout.addLayout(buttons_layout)
@@ -75,12 +73,10 @@ class AnswerCheckerWindow(QDialog):
                 background-color: #444;
             }
         """
-        self.additional_question_button.setStyleSheet(button_style)
         self.joke_button.setStyleSheet(button_style)
         self.edit_advice_button.setStyleSheet(button_style)
 
         self.send_button.clicked.connect(self.send_answer)
-        self.additional_question_button.clicked.connect(self.ask_additional_question)
         self.joke_button.clicked.connect(self.show_joke)
         self.edit_advice_button.clicked.connect(self.show_edit_advice)
 
@@ -647,44 +643,6 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
         # Clear the input field after submitting the answer
         self.input_field.clear()
-
-    def ask_additional_question(self):
-        """Handles additional questions."""
-        question, ok = QInputDialog.getText(self, "추가 질문", "질문을 입력하세요:", text="", echo=QLineEdit.EchoMode.Normal)
-        if ok and question:
-            # 사용자 메시지 표시
-            user_message_html = f"""
-            <div class="user-message-container">
-                <div class="user-message">
-                    <p>{question}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(user_message_html)
-
-            # AI 응답 로딩 애니메이션 표시
-            self.display_loading_animation(True)
-
-            try:
-                card_content, card_answers, card_ord = self.bridge.get_card_content()
-                if card_content and card_answers:
-                    # 비동기로 처리
-                    QTimer.singleShot(0, lambda: self.bridge.process_question(card_content, question, card_answers))
-                else:
-                    raise Exception("카드 정보를 가져올 수 없습니다.")
-            except Exception as e:
-                logger.exception("Error processing additional question: %s", e)
-                self.display_loading_animation(False)
-                error_html = f"""
-                <div class="system-message-container">
-                    <div class="system-message">
-                        <p style='color: red;'>질문 처리 중 오류가 발생했습니다: {str(e)}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
-                self.append_to_chat(error_html)
 
     def show_joke(self):
         """Requests and displays a joke."""
