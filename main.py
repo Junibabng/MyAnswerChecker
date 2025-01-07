@@ -169,7 +169,13 @@ def load_settings():
 
 def load_global_settings():
     """Loads global settings into mw.llm_addon_settings"""
+    settings = QSettings("LLM_response_evaluator", "Settings")
     mw.llm_addon_settings = load_settings()
+    
+    # Set logging level based on settings
+    debug_logging = settings.value("debug_logging", False, type=bool)
+    logger.setLevel(logging.DEBUG if debug_logging else logging.INFO)
+    
     logger.debug("Global settings loaded")
 
 class SettingsDialog(QDialog):
@@ -265,6 +271,16 @@ class SettingsDialog(QDialog):
         self.layout.addWidget(self.temperatureLabel)
         self.layout.addWidget(self.temperatureEdit)
 
+        # Debug logging settings
+        self.debugGroup = QGroupBox("Debug Settings")
+        debugLayout = QVBoxLayout()
+        
+        self.debugLoggingCheckbox = QCheckBox("Enable Debug Logging")
+        debugLayout.addWidget(self.debugLoggingCheckbox)
+        
+        self.debugGroup.setLayout(debugLayout)
+        self.layout.addWidget(self.debugGroup)
+
         # Save button
         self.saveButton = QPushButton("Save")
         self.saveButton.clicked.connect(self.saveSettings)
@@ -308,6 +324,9 @@ class SettingsDialog(QDialog):
         self.hardThresholdEdit.setValue(int(settings.value("hardThreshold", "50")))
         self.languageEdit.setText(settings.value("language", "English"))
         self.temperatureEdit.setValue(float(settings.value("temperature", "0.2")))
+        
+        # Load debug settings
+        self.debugLoggingCheckbox.setChecked(settings.value("debug_logging", False, type=bool))
 
     def saveSettings(self):
         """Saves settings"""
@@ -332,6 +351,15 @@ class SettingsDialog(QDialog):
         settings.setValue("hardThreshold", str(self.hardThresholdEdit.value()))
         settings.setValue("language", self.languageEdit.text())
         settings.setValue("temperature", str(self.temperatureEdit.value()))
+        
+        # Save debug settings
+        settings.setValue("debug_logging", self.debugLoggingCheckbox.isChecked())
+        
+        # Update logging level
+        if self.debugLoggingCheckbox.isChecked():
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
 
         # Update Bridge's LLM provider
         if bridge:

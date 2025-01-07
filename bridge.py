@@ -245,22 +245,47 @@ class Bridge(QObject):
             return False
 
     def update_llm_provider(self):
+        """Update LLM provider with current settings"""
         settings = QSettings("LLM_response_evaluator", "Settings")
         provider_type = settings.value("providerType", "openai")
+        
+        # 이전 설정 저장
+        old_provider = type(self.llm_provider).__name__ if self.llm_provider else None
+        old_model = self.llm_provider.model_name if self.llm_provider else None
+        old_temperature = self.temperature if hasattr(self, 'temperature') else None
+        
+        # 새로운 설정 로드
         self.temperature = float(settings.value("temperature", "0.2"))
         
-        if provider_type == "openai":
-            api_key = settings.value("openaiApiKey", "")
-            base_url = settings.value("baseUrl", "https://api.openai.com")
-            model_name = settings.value("modelName", "gpt-4o-mini")
-            self.llm_provider = OpenAIProvider(api_key, base_url, model_name)
-        elif provider_type == "gemini":
-            api_key = settings.value("geminiApiKey", "")
-            model_name = settings.value("geminiModel", "gemini-2.0-flash-exp")
-            self.llm_provider = GeminiProvider(api_key, model_name)
+        try:
+            if provider_type == "openai":
+                api_key = settings.value("openaiApiKey", "")
+                base_url = settings.value("baseUrl", "https://api.openai.com")
+                model_name = settings.value("modelName", "gpt-4o-mini")
+                self.llm_provider = OpenAIProvider(api_key, base_url, model_name)
+            elif provider_type == "gemini":
+                api_key = settings.value("geminiApiKey", "")
+                model_name = settings.value("geminiModel", "gemini-2.0-flash-exp")
+                self.llm_provider = GeminiProvider(api_key, model_name)
+            
+            # 설정이 변경되었는지 확인
+            if (old_provider != type(self.llm_provider).__name__ or
+                old_model != self.llm_provider.model_name or
+                old_temperature != self.temperature):
+                logger.debug(f"""
+Model settings changed:
+- Provider: {old_provider} -> {type(self.llm_provider).__name__}
+- Model: {old_model} -> {self.llm_provider.model_name}
+- Temperature: {old_temperature} -> {self.temperature}
+""")
+                # UI 업데이트 시그널 발생
+                self.model_info_changed.emit()
+            
+        except Exception as e:
+            logger.exception("Error updating LLM provider: %s", e)
+            showInfo(f"Error updating LLM provider: {str(e)}")
 
-        # Emit signal to update UI
-        self.model_info_changed.emit()
+        return True
 
     def call_llm_api(self, system_message, user_message_content, max_retries=3):
         """Calls the selected LLM API to get a response."""
