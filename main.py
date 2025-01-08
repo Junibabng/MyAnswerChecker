@@ -158,10 +158,10 @@ def load_settings():
         "baseUrl": "https://api.openai.com",
         "modelName": "gpt-4o-mini",
         "easyThreshold": 5,
-        "goodThreshold": 15,
-        "hardThreshold": 50,
+        "goodThreshold": 40,
+        "hardThreshold": 60,
         "language": "English",
-        "temperature": 0.2,
+        "temperature": 0.7,
         "providerType": "openai"
     }
     
@@ -186,12 +186,19 @@ class SettingsDialog(QDialog):
 
         self.layout = QVBoxLayout(self)
 
+        # Create tab widget
+        self.tabWidget = QTabWidget()
+        
+        # API Settings Tab
+        self.apiTab = QWidget()
+        apiLayout = QVBoxLayout()
+        
         # API Provider selection
         self.providerLabel = QLabel("API Provider:")
         self.providerCombo = QComboBox()
         self.providerCombo.addItems(["OpenAI", "Gemini"])
-        self.layout.addWidget(self.providerLabel)
-        self.layout.addWidget(self.providerCombo)
+        apiLayout.addWidget(self.providerLabel)
+        apiLayout.addWidget(self.providerCombo)
 
         # OpenAI Settings
         self.openaiGroup = QGroupBox("OpenAI Settings")
@@ -227,10 +234,14 @@ class SettingsDialog(QDialog):
         geminiLayout.addWidget(self.geminiModelEdit)
         self.geminiGroup.setLayout(geminiLayout)
 
-        self.layout.addWidget(self.openaiGroup)
-        self.layout.addWidget(self.geminiGroup)
+        apiLayout.addWidget(self.openaiGroup)
+        apiLayout.addWidget(self.geminiGroup)
+        self.apiTab.setLayout(apiLayout)
 
-        # Difficulty threshold settings
+        # Difficulty Settings Tab
+        self.difficultyTab = QWidget()
+        difficultyLayout = QVBoxLayout()
+
         self.thresholdGroup = QGroupBox("Difficulty Settings")
         thresholdLayout = QVBoxLayout()
 
@@ -252,15 +263,19 @@ class SettingsDialog(QDialog):
         thresholdLayout.addWidget(self.goodThresholdEdit)
         thresholdLayout.addWidget(self.hardThresholdLabel)
         thresholdLayout.addWidget(self.hardThresholdEdit)
-        
         self.thresholdGroup.setLayout(thresholdLayout)
-        self.layout.addWidget(self.thresholdGroup)
+        difficultyLayout.addWidget(self.thresholdGroup)
+        self.difficultyTab.setLayout(difficultyLayout)
+
+        # General Settings Tab
+        self.generalTab = QWidget()
+        generalLayout = QVBoxLayout()
 
         # Language settings
         self.languageLabel = QLabel("Response Language:")
         self.languageEdit = QLineEdit()
-        self.layout.addWidget(self.languageLabel)
-        self.layout.addWidget(self.languageEdit)
+        generalLayout.addWidget(self.languageLabel)
+        generalLayout.addWidget(self.languageEdit)
 
         # Temperature settings
         self.temperatureLabel = QLabel("Temperature (0.0 ~ 1.0):")
@@ -268,8 +283,8 @@ class SettingsDialog(QDialog):
         self.temperatureEdit.setRange(0.0, 1.0)
         self.temperatureEdit.setSingleStep(0.1)
         self.temperatureEdit.setDecimals(2)
-        self.layout.addWidget(self.temperatureLabel)
-        self.layout.addWidget(self.temperatureEdit)
+        generalLayout.addWidget(self.temperatureLabel)
+        generalLayout.addWidget(self.temperatureEdit)
 
         # Debug logging settings
         self.debugGroup = QGroupBox("Debug Settings")
@@ -279,7 +294,15 @@ class SettingsDialog(QDialog):
         debugLayout.addWidget(self.debugLoggingCheckbox)
         
         self.debugGroup.setLayout(debugLayout)
-        self.layout.addWidget(self.debugGroup)
+        generalLayout.addWidget(self.debugGroup)
+        self.generalTab.setLayout(generalLayout)
+
+        # Add tabs to tab widget
+        self.tabWidget.addTab(self.apiTab, "API Settings")
+        self.tabWidget.addTab(self.difficultyTab, "Difficulty")
+        self.tabWidget.addTab(self.generalTab, "General")
+        
+        self.layout.addWidget(self.tabWidget)
 
         # Save button
         self.saveButton = QPushButton("Save")
@@ -320,10 +343,10 @@ class SettingsDialog(QDialog):
         
         # Other settings
         self.easyThresholdEdit.setValue(int(settings.value("easyThreshold", "5")))
-        self.goodThresholdEdit.setValue(int(settings.value("goodThreshold", "15")))
-        self.hardThresholdEdit.setValue(int(settings.value("hardThreshold", "50")))
+        self.goodThresholdEdit.setValue(int(settings.value("goodThreshold", "40")))
+        self.hardThresholdEdit.setValue(int(settings.value("hardThreshold", "60")))
         self.languageEdit.setText(settings.value("language", "English"))
-        self.temperatureEdit.setValue(float(settings.value("temperature", "0.2")))
+        self.temperatureEdit.setValue(float(settings.value("temperature", "0.7")))
         
         # Load debug settings
         self.debugLoggingCheckbox.setChecked(settings.value("debug_logging", False, type=bool))
