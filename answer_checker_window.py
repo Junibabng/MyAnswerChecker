@@ -41,9 +41,6 @@ class AnswerCheckerWindow(QDialog):
         self.timer_label = QLabel("Elapsed time: 0 seconds") 
         self.layout.addWidget(self.timer_label)
 
-        self.model_info_label = QLabel("Model: Unknown, Temperature: Unknown")
-        self.layout.addWidget(self.model_info_label)
-
         self.web_view = QWebEngineView()
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -198,6 +195,14 @@ class AnswerCheckerWindow(QDialog):
             max-width: 75%;
         }
 
+        .model-info {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 4px;
+            margin-left: 16px;
+            font-weight: bold;
+        }
+
         .loading-dots {
             display: flex;
             gap: 6px;
@@ -293,8 +298,6 @@ class AnswerCheckerWindow(QDialog):
         </html>
         """
         self.input_field.returnPressed.connect(self.handle_enter_key)
-        self.bridge.model_info_changed.connect(self.update_model_info)
-        self.update_model_info()
         self.initialize_webview()
         reviewer_did_show_question.append(self.on_show_question)
         reviewer_did_show_answer.append(self.on_show_answer)
@@ -446,12 +449,6 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 lambda result: logger.debug(f"Loading animation removal {'successful' if result else 'failed'}")
             )
 
-    def update_model_info(self):
-        """Updates the model and temperature information in the UI."""
-        model_name = self.bridge.llm_provider.model_name if self.bridge.llm_provider else "Unknown"
-        temperature = f"{self.bridge.temperature:.1f}" if hasattr(self.bridge, 'temperature') else "Unknown"
-        self.model_info_label.setText(f"Model: {model_name}, Temperature: {temperature}")
-
     def update_timer_display(self, elapsed_time):
         """Updates the elapsed time in the UI."""
         self.timer_label.setText(f"Elapsed time: {elapsed_time} seconds")
@@ -480,19 +477,59 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         self.append_to_chat(error_html)
         QTimer.singleShot(0, lambda: showInfo(error_message))
 
+    def _preprocess_json_string(self, json_str):
+        """JSON 문자열을 파싱하기 전에 전처리합니다."""
+        try:
+            # ```json과 ``` 태그 제거
+            if json_str.startswith('```json'):
+                json_str = json_str[7:]
+            if json_str.endswith('```'):
+                json_str = json_str[:-3]
+            
+            # 문자열 앞뒤 공백 제거
+            json_str = json_str.strip()
+            
+            return json_str
+        except Exception as e:
+            logger.error(f"JSON 전처리 중 오류: {str(e)}")
+            return json_str
+
     def display_response(self, response_json):
         """Displays the LLM response in the webview."""
         try:
             self.display_loading_animation(False)
-            response = json.loads(response_json)
+            processed_json = self._preprocess_json_string(response_json)
+            
+            try:
+                response = json.loads(processed_json)
+            except json.JSONDecodeError:
+                # JSON 파싱 실패 시 정규식으로 JSON 부분 추출 시도
+                import re
+                json_pattern = r'\{[^}]+\}'
+                match = re.search(json_pattern, processed_json)
+                if match:
+                    response = json.loads(match.group(0))
+                else:
+                    raise
+            
             evaluation = response.get("evaluation", "No evaluation")
             recommendation = response.get("recommendation", "No recommendation")
             answer = response.get("answer", "")
             reference = response.get("reference", "")
             self.last_response = response_json
+
+            # 현재 모델 정보 가져오기
+            settings = QSettings("LLM_response_evaluator", "Settings")
+            provider_type = settings.value("providerType", "openai").lower()
+            if provider_type == "openai":
+                model_name = settings.value("modelName", "Unknown Model")
+            else:  # gemini
+                model_name = settings.value("geminiModel", "Unknown Model")
+            
             recommendation_class = self.get_recommendation_class(recommendation)
             html_content = f"""
             <div class="system-message-container">
+                <div class="model-info">{model_name}</div>
                 <div class="system-message">
                     <h2>평가 결과</h2>
                     <div class="evaluation">{evaluation}</div>
@@ -504,7 +541,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             </div>
             """
             self.append_to_chat(html_content)
-        except json.JSONDecodeError as e:
+        except Exception as e:
             self.handle_response_error("JSON 파싱 오류", str(e))
         except Exception as e:
             self.handle_response_error("예기치 않은 오류", str(e))
@@ -513,15 +550,37 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         """Displays the response to an additional question."""
         self.display_loading_animation(False)
         try:
-            response = json.loads(response_json)
+            processed_json = self._preprocess_json_string(response_json)
+            
+            try:
+                response = json.loads(processed_json)
+            except json.JSONDecodeError:
+                # JSON 파싱 실패 시 정규식으로 JSON 부분 추출 시도
+                import re
+                json_pattern = r'\{[^}]+\}'
+                match = re.search(json_pattern, processed_json)
+                if match:
+                    response = json.loads(match.group(0))
+                else:
+                    raise
+
             if "error" in response:
                 answer_html = self.get_error_html(response['error'])
             else:
+                # 현재 모델 정보 가져오기
+                settings = QSettings("LLM_response_evaluator", "Settings")
+                provider_type = settings.value("providerType", "openai").lower()
+                if provider_type == "openai":
+                    model_name = settings.value("modelName", "Unknown Model")
+                else:  # gemini
+                    model_name = settings.value("geminiModel", "Unknown Model")
+                
                 recommendation = response.get("recommendation", "")
                 recommendation_class = self.get_recommendation_class(recommendation)
                 answer = response.get("answer", "답변 없음")
                 answer_html = f"""
                 <div class="system-message-container">
+                    <div class="model-info">{model_name}</div>
                     <div class="system-message">
                         <h3>추가 답변</h3>
                         <span class="{recommendation_class}">{recommendation}</span>
@@ -538,13 +597,35 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         """Displays the joke in the webview."""
         self.display_loading_animation(False)
         try:
-            response = json.loads(response_json)
+            processed_json = self._preprocess_json_string(response_json)
+            
+            try:
+                response = json.loads(processed_json)
+            except json.JSONDecodeError:
+                # JSON 파싱 실패 시 정규식으로 JSON 부분 추출 시도
+                import re
+                json_pattern = r'\{[^}]+\}'
+                match = re.search(json_pattern, processed_json)
+                if match:
+                    response = json.loads(match.group(0))
+                else:
+                    raise
+
             if "error" in response:
                 joke_html = self.get_error_html(response['error'])
             else:
+                # 현재 모델 정보 가져오기
+                settings = QSettings("LLM_response_evaluator", "Settings")
+                provider_type = settings.value("providerType", "openai").lower()
+                if provider_type == "openai":
+                    model_name = settings.value("modelName", "Unknown Model")
+                else:  # gemini
+                    model_name = settings.value("geminiModel", "Unknown Model")
+                
                 joke = response.get("joke", "농담 생성 실패")
                 joke_html = f"""
                 <div class="system-message-container">
+                    <div class="model-info">{model_name}</div>
                     <div class="system-message">
                         <h3>재미있는 농담 😆</h3>
                         <p>{self.markdown_to_html(joke)}</p>
@@ -570,7 +651,20 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         self.display_loading_animation(False)
 
         try:
-            response = json.loads(response_json)
+            processed_json = self._preprocess_json_string(response_json)
+            
+            try:
+                response = json.loads(processed_json)
+            except json.JSONDecodeError:
+                # JSON 파싱 실패 시 정규식으로 JSON 부분 추출 시도
+                import re
+                json_pattern = r'\{[^}]+\}'
+                match = re.search(json_pattern, processed_json)
+                if match:
+                    response = json.loads(match.group(0))
+                else:
+                    raise
+
             if "error" in response:
                 advice_html = f"""
                 <div class="system-message-container">
@@ -581,9 +675,18 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 </div>
                 """
             else:
+                # 현재 모델 정보 가져오기
+                settings = QSettings("LLM_response_evaluator", "Settings")
+                provider_type = settings.value("providerType", "openai").lower()
+                if provider_type == "openai":
+                    model_name = settings.value("modelName", "Unknown Model")
+                else:  # gemini
+                    model_name = settings.value("geminiModel", "Unknown Model")
+                
                 edit_advice = response.get("edit_advice", "조언을 생성할 수 없습니다.")
                 advice_html = f"""
                 <div class="system-message-container">
+                    <div class="model-info">{model_name}</div>
                     <div class="system-message">
                         <h3>카드 수정 조언 ✏️</h3>
                         <p>{self.markdown_to_html(edit_advice)}</p>
@@ -1021,7 +1124,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 logger.debug("Initial webview load - showing default message")
                 self.show_default_message()
         else:
-            # WebView 재로드 시 마지막 난이도 메시지 복원
+            # WebView 재로드 시 마지막 난이도 메시지 복복원
             logger.debug("Restoring messages after webview reload")
             if self.last_difficulty_message:
                 logger.debug("Restoring difficulty message")
