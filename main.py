@@ -160,9 +160,9 @@ def load_settings():
         "easyThreshold": 5,
         "goodThreshold": 40,
         "hardThreshold": 60,
-        "language": "English",
         "temperature": 0.7,
-        "providerType": "openai"
+        "providerType": "openai",
+        "systemPrompt": "You are a helpful assistant."
     }
     
     return {key: settings.value(key, default) for key, default in defaults.items()}
@@ -271,12 +271,6 @@ class SettingsDialog(QDialog):
         self.generalTab = QWidget()
         generalLayout = QVBoxLayout()
 
-        # Language settings
-        self.languageLabel = QLabel("Response Language:")
-        self.languageEdit = QLineEdit()
-        generalLayout.addWidget(self.languageLabel)
-        generalLayout.addWidget(self.languageEdit)
-
         # Temperature settings
         self.temperatureLabel = QLabel("Temperature (0.0 ~ 1.0):")
         self.temperatureEdit = QDoubleSpinBox()
@@ -296,6 +290,18 @@ class SettingsDialog(QDialog):
         self.debugGroup.setLayout(debugLayout)
         generalLayout.addWidget(self.debugGroup)
         self.generalTab.setLayout(generalLayout)
+
+        # 시스템 프롬프트 설정 그룹
+        systemPromptGroup = QGroupBox("System Prompt Settings")
+        systemPromptLayout = QVBoxLayout()
+        
+        self.systemPromptEdit = QLineEdit()
+        self.systemPromptEdit.setPlaceholderText("Enter system prompt (e.g., Answer like a cat)")
+        systemPromptLayout.addWidget(QLabel("System Prompt:"))
+        systemPromptLayout.addWidget(self.systemPromptEdit)
+        
+        systemPromptGroup.setLayout(systemPromptLayout)
+        generalLayout.addWidget(systemPromptGroup)
 
         # Add tabs to tab widget
         self.tabWidget.addTab(self.apiTab, "API Settings")
@@ -345,11 +351,13 @@ class SettingsDialog(QDialog):
         self.easyThresholdEdit.setValue(int(settings.value("easyThreshold", "5")))
         self.goodThresholdEdit.setValue(int(settings.value("goodThreshold", "40")))
         self.hardThresholdEdit.setValue(int(settings.value("hardThreshold", "60")))
-        self.languageEdit.setText(settings.value("language", "English"))
         self.temperatureEdit.setValue(float(settings.value("temperature", "0.7")))
         
         # Load debug settings
         self.debugLoggingCheckbox.setChecked(settings.value("debug_logging", False, type=bool))
+
+        # Load system prompt (remove language setting)
+        self.systemPromptEdit.setText(settings.value("systemPrompt", "You are a helpful assistant."))
 
     def saveSettings(self):
         """Saves settings"""
@@ -372,8 +380,13 @@ class SettingsDialog(QDialog):
         settings.setValue("easyThreshold", str(self.easyThresholdEdit.value()))
         settings.setValue("goodThreshold", str(self.goodThresholdEdit.value()))
         settings.setValue("hardThreshold", str(self.hardThresholdEdit.value()))
-        settings.setValue("language", self.languageEdit.text())
         settings.setValue("temperature", str(self.temperatureEdit.value()))
+        
+        # Save system prompt instead of language
+        settings.setValue("systemPrompt", self.systemPromptEdit.text())
+        
+        # Remove language setting
+        settings.remove("language")
         
         # Save debug settings
         settings.setValue("debug_logging", self.debugLoggingCheckbox.isChecked())
