@@ -253,9 +253,11 @@ class Bridge(QObject):
         old_provider = type(self.llm_provider).__name__ if self.llm_provider else None
         old_model = self.llm_provider.model_name if self.llm_provider else None
         old_temperature = self.temperature if hasattr(self, 'temperature') else None
+        old_system_prompt = self.system_prompt if hasattr(self, 'system_prompt') else None
         
         # 새로운 설정 로드
         self.temperature = float(settings.value("temperature", "0.2"))
+        self.system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
         
         try:
             if provider_type == "openai":
@@ -268,15 +270,21 @@ class Bridge(QObject):
                 model_name = settings.value("geminiModel", "gemini-2.0-flash-exp")
                 self.llm_provider = GeminiProvider(api_key, model_name)
             
+            # 프로바이더에 시스템 프롬프트 설정
+            if hasattr(self.llm_provider, 'set_system_prompt'):
+                self.llm_provider.set_system_prompt(self.system_prompt)
+            
             # 설정이 변경되었는지 확인
             if (old_provider != type(self.llm_provider).__name__ or
                 old_model != self.llm_provider.model_name or
-                old_temperature != self.temperature):
+                old_temperature != self.temperature or
+                old_system_prompt != self.system_prompt):
                 logger.debug(f"""
 Model settings changed:
 - Provider: {old_provider} -> {type(self.llm_provider).__name__}
 - Model: {old_model} -> {self.llm_provider.model_name}
 - Temperature: {old_temperature} -> {self.temperature}
+- System Prompt: {old_system_prompt} -> {self.system_prompt}
 """)
                 # UI 업데이트 시그널 발생
                 self.model_info_changed.emit()
@@ -850,10 +858,10 @@ Model settings changed:
         """Clean text by removing code block markers and normalizing whitespace"""
         # 코드 블록 마커 제거
         text = re.sub(r'```json\s*|\s*```', '', text)
-        # 마크다운 포� 제거
+        # 마크다운 포 제거
         text = re.sub(r'\*\*.*?\*\*', '', text)
         text = re.sub(r'{{c\d+::.*?}}', '', text)
-        # 줄바꿈 및 �백 정규화
+        # 줄바꿈 및 백 정규화
         text = text.replace('\n', ' ').replace('\r', '')
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
@@ -863,7 +871,7 @@ Model settings changed:
         try:
             text = self._clean_text(text)
             
-            # 통합된 JSON 패��
+            # 통합된 JSON 패턴
             patterns = [
                 # 엄격한 패턴 (필드 순서 지정)
                 r'({[^{}]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})',
@@ -937,7 +945,7 @@ Model settings changed:
                 logger.debug(f"Invalid recommendation value: {parsed_json['recommendation']}")
                 return False
             
-            # 필드 값이 비�있지 않은지 확인
+            # 필드 값이 비있지 않은지 확인
             if not all(parsed_json[field].strip() for field in required_fields):
                 logger.debug("Empty required fields found")
                 return False

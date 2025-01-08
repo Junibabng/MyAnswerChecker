@@ -51,22 +51,34 @@ class OpenAIProvider(LLMProvider):
         self.api_key = api_key
         self.base_url = base_url
         self.model_name = model_name
+        self.system_prompt = "You are a helpful assistant."
+
+    def set_system_prompt(self, prompt):
+        self.system_prompt = prompt
 
     def call_api(self, system_message, user_message, temperature=0.2):
+        """LLM API를 호출하여 응답을 받아옵니다."""
+        messages = [
+            {"role": "user", "content": user_message}
+        ]
+        return self.generate_response(messages, temperature)
+
+    def generate_response(self, messages, temperature=0.7):
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
         }
-        data = {
+
+        payload = {
             "model": self.model_name,
             "messages": [
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ],
+                {"role": "system", "content": self.system_prompt}
+            ] + messages,
             "temperature": temperature
         }
+
         try:
-            result = self._make_api_request(headers, data)
+            result = self._make_api_request(headers, payload)
             return result['choices'][0]['message']['content'].strip()
         except Exception as e:
             logger.exception("OpenAI API call failed: %s", e)
@@ -78,46 +90,41 @@ class GeminiProvider(LLMProvider):
         self.api_key = api_key
         self.model_name = model_name
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        self.system_prompt = "You are a helpful assistant."
+
+    def set_system_prompt(self, prompt):
+        self.system_prompt = prompt
 
     def call_api(self, system_message, user_message, temperature=0.2):
-        headers = {
-            "Content-Type": "application/json"
-        }
-        
-        data = {
-            "contents": [{
-                "role": "user",
-                "parts": [{
-                    "text": user_message
-                }]
-            }],
-            "systemInstruction": {
-                "role": "user",
-                "parts": [{
-                    "text": system_message
-                }]
-            },
-            "generationConfig": {
-                "temperature": temperature,
-                "topK": 40,
-                "topP": 0.95,
-                "maxOutputTokens": 8192,
-                "responseMimeType": "text/plain"
-            }
-        }
-        
-        url = f"{self.base_url}/models/{self.model_name}:generateContent?key={self.api_key}"
-        
+        """LLM API를 호출하여 응답을 받아옵니다."""
+        messages = [
+            {"role": "user", "content": user_message}
+        ]
+        return self.generate_response(messages, temperature)
+
+    def generate_response(self, messages, temperature=0.7):
         try:
-            result = self._make_api_request(headers, data, url)
-            if "flash-thinking" in self.model_name.lower():
-                if result.get('candidates') and result['candidates'][0].get('content', {}).get('parts'):
-                    parts = result['candidates'][0]['content']['parts']
-                    final_response = " ".join(part.get('text', '').strip() for part in parts[1:])
-                    return final_response.strip()
-            return result['candidates'][0]['content']['parts'][0]['text'].strip()
+            genai.configure(api_key=self.api_key)
+            model = genai.GenerativeModel(self.model_name)
+            
+            # 시스템 프롬프트와 메시지들을 결합
+            combined_prompt = f"{self.system_prompt}\n\n"
+            for message in messages:
+                role = message.get("role", "user")
+                content = message.get("content", "")
+                combined_prompt += f"{role}: {content}\n"
+            
+            response = model.generate_content(
+                combined_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=temperature
+                )
+            )
+            
+            return response.text
+            
         except Exception as e:
-            logger.exception("Gemini API call failed: %s", e)
+            logger.exception("Error generating Gemini response: %s", e)
             raise
 
     def stream_response(self, data_chunk):
