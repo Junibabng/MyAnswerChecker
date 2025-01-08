@@ -288,6 +288,9 @@ Model settings changed:
 """)
                 # UI 업데이트 시그널 발생
                 self.model_info_changed.emit()
+                
+                # 대화 기록 초기화
+                self.clear_conversation_history()
             
         except Exception as e:
             logger.exception("Error updating LLM provider: %s", e)
@@ -412,6 +415,13 @@ Model settings changed:
             hard_threshold = int(settings.value("hardThreshold", "50"))
             elapsed_time = self.llm_data.get("elapsed_time")
             language = settings.value("language", "English")
+            
+            # 현재 시스템 프롬프트 확인 및 업데이트
+            current_system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
+            if current_system_prompt != self.system_prompt:
+                self.system_prompt = current_system_prompt
+                if hasattr(self.llm_provider, 'set_system_prompt'):
+                    self.llm_provider.set_system_prompt(self.system_prompt)
 
             # Clean content
             soup_content = BeautifulSoup(card_content, 'html.parser')
@@ -420,6 +430,19 @@ Model settings changed:
             # Format answers as a comma-separated list
             formatted_answers = ", ".join(card_answers) if isinstance(card_answers, list) else str(card_answers)
             logger.debug(f"Formatted answers for LLM: {formatted_answers}")
+
+            # 드 컨텍스트 업데이트
+            self.conversation_history['card_context'] = {
+                'content': card_content,
+                'answers': card_answers
+            }
+
+            # 이전 대화 내용 가져오기
+            conversation_context = []
+            if self.conversation_history['messages']:
+                conversation_context.append("\nPrevious conversation:")
+                for msg in self.conversation_history['messages'][-self.max_context_length:]:
+                    conversation_context.append(f"{msg['role'].title()}: {msg['content']}")
 
             # Create common context data
             context_data = f"""
@@ -430,6 +453,7 @@ Model settings changed:
             Time Taken: {self.last_elapsed_time or 'Not available'} seconds
             Previous Evaluation: {self.last_response.get('evaluation', 'Not available') if self.last_response else 'Not available'}
             Previous Recommendation: {self.last_response.get('recommendation', 'Not available') if self.last_response else 'Not available'}
+            {''.join(conversation_context)}
             """
 
             # request_type별 특화된 프롬프트와 시스템 메시지
@@ -555,17 +579,25 @@ Model settings changed:
                 },
                 "question": {
                     "system": f"You are a helpful assistant. Always answer in {language}.",
-                    "content": f"{context_data}\n\nAdditional Question: {question}\n\nBased on all this context, please provide a detailed answer to the additional question."
+                    "content": f"{context_data}\n\nAdditional Question: {question}\n\nBased on all this context and previous conversation, please provide a detailed answer to the additional question."
                 },
                 "joke": {
                     "system": f"You are a comedian. Always answer in {language}.",
-                    "content": f"{context_data}\n\nBased on this context and especially considering how well the user performed, please create a funny and encouraging joke related to this card's content."
+                    "content": f"{context_data}\n\nBased on this context, previous conversation, and especially considering how well the user performed, please create a funny and encouraging joke related to this card's content."
                 },
                 "edit_advice": {
                     "system": f"You are an Anki card editing expert. Always answer in {language}.",
-                    "content": f"{context_data}\n\nBased on the user's performance and all available context, please provide detailed, actionable advice for improving this card."
+                    "content": f"{context_data}\n\nBased on the user's performance, previous conversation, and all available context, please provide detailed, actionable advice for improving this card."
                 }
             }
+
+            # 현재 메시지를 대화 기록에 추가
+            if request_type != "answer":  # answer type은 별도로 관리
+                if question:
+                    self.conversation_history['messages'].append({
+                        'role': 'user',
+                        'content': question
+                    })
 
             selected_type = type_specific_content.get(request_type, {
                 "system": f"You are a helpful assistant. Always answer in {language}.",
@@ -580,6 +612,18 @@ Model settings changed:
     def process_answer(self):
         """Calls the OpenAI API in a background thread to get the evaluation."""
         try:
+            # 드 변경 확인 및 대화 기록 초기화
+            card = mw.reviewer.card
+            if card and card.id != self.current_card_id:
+                self.current_card_id = card.id
+                self.clear_conversation_history()
+            
+            # 사용자 답변을 대화 기록에 추가
+            self.conversation_history['messages'].append({
+                'role': 'user',
+                'content': f"Answer: {self.llm_data.get('user_answer', 'Not available')}"
+            })
+
             system_message, user_message_content = self.create_llm_message(
                 self.llm_data["card_content"], 
                 self.llm_data["card_answers"], 
@@ -628,6 +672,12 @@ Model settings changed:
                     self.last_response = response_json
                     self.last_user_answer = self.llm_data.get("user_answer", "")
                     self.last_elapsed_time = self.llm_data.get("elapsed_time", "")
+
+                    # LLM의 응답을 대화 기록에 추가
+                    self.conversation_history['messages'].append({
+                        'role': 'assistant',
+                        'content': f"Evaluation: {evaluation}\nRecommendation: {recommendation}\nReference: {reference}"
+                    })
                     
                     response = json.dumps({
                         "evaluation": self.markdown_to_html(evaluation),
@@ -693,47 +743,30 @@ Model settings changed:
         try:
             logger.debug("=== Processing Additional Question ===")
             logger.debug(f"Question: {question}")
-            logger.debug(f"Current context length: {len(self.conversation_history['messages'])}")
             
-            # Update conversation history
-            if self.current_card_id != self.conversation_history['current_card_id']:
-                logger.debug("New card detected - clearing conversation history")
-                self.conversation_history['messages'] = []
-                self.conversation_history['card_context'] = {
-                    'content': card_content,
-                    'answers': card_answers
-                }
-                self.conversation_history['current_card_id'] = self.current_card_id
-            
-            # Add user question to history
+            # 사용자 질문을 대화 기록에 추가
             self.conversation_history['messages'].append({
                 'role': 'user',
                 'content': question
             })
             
-            # Build conversation context
-            context_messages = []
-            if self.conversation_history['card_context']:
-                context_messages.append(f"Card Content: {self.conversation_history['card_context']['content']}")
-                context_messages.append(f"Correct Answer(s): {self.conversation_history['card_context']['answers']}")
+            system_message, user_message_content = self.create_llm_message(
+                card_content,
+                card_answers,
+                question,
+                "question"
+            )
             
-            for msg in self.conversation_history['messages'][-self.max_context_length:]:
-                context_messages.append(f"{msg['role'].title()}: {msg['content']}")
+            # LLM 응답 받기
+            response = self.call_llm_api(system_message, user_message_content)
             
-            context = "\n".join(context_messages)
-            logger.debug(f"Built conversation context (truncated): {context[:200]}...")
-            
-            # Get response from LLM
-            system_message = f"You are a helpful assistant. Previous conversation:\n{context}"
-            response = self.call_llm_api(system_message, question)
-            
-            # Add assistant response to history
+            # LLM 응답을 대화 기록에 추가
             self.conversation_history['messages'].append({
                 'role': 'assistant',
                 'content': response
             })
             
-            # Emit response
+            # 응답 전송
             response_json = json.dumps({"answer": response})
             logger.debug(f"Sending response (truncated): {response[:200]}...")
             
@@ -754,26 +787,16 @@ Model settings changed:
                 Q_ARG(str, error_json)
             )
 
-    def clear_conversation_history(self):
-        """Clears the conversation history"""
-        logger.debug("Clearing conversation history")
-        self.conversation_history = {
-            'messages': [],
-            'card_context': None,
-            'current_card_id': None
-        }
-
-    def _get_chat_content(self):
-        """Get formatted chat content for context"""
-        messages = []
-        for msg in self.conversation_history['messages']:
-            messages.append(f"{msg['role'].title()}: {msg['content']}")
-        return "\n".join(messages)
-
     def process_joke_request(self, card_content, card_answers):
         """Handles a joke generation request."""
         def thread_func():
             try:
+                # 사용자 요청을 대화 기록에 추가
+                self.conversation_history['messages'].append({
+                    'role': 'user',
+                    'content': "Please tell me a joke about this card!"
+                })
+
                 system_message, user_message_content = self.create_llm_message(
                     card_content, 
                     card_answers, 
@@ -782,6 +805,13 @@ Model settings changed:
                 )
                 
                 response = self.call_llm_api(system_message, user_message_content)
+                
+                # LLM 응응답을 대화 기록에 추가
+                self.conversation_history['messages'].append({
+                    'role': 'assistant',
+                    'content': f"Joke: {response}"
+                })
+
                 response_json = json.dumps({"joke": response})
                 
                 QMetaObject.invokeMethod(
@@ -800,7 +830,6 @@ Model settings changed:
                     Q_ARG(str, error_json)
                 )
 
-        # 별도 스레드에서 실행
         thread = threading.Thread(target=thread_func)
         thread.start()
 
@@ -808,6 +837,12 @@ Model settings changed:
         """Handles a card edit advice request."""
         def thread_func():
             try:
+                # 사용자 요청을 대화 기록에 추가
+                self.conversation_history['messages'].append({
+                    'role': 'user',
+                    'content': "Please provide advice for improving this card."
+                })
+
                 system_message, user_message_content = self.create_llm_message(
                     card_content, 
                     card_answers, 
@@ -816,7 +851,13 @@ Model settings changed:
                 )
                 
                 response = self.call_llm_api(system_message, user_message_content)
-                # edit_advice 키로 간단화된 응답 구조
+                
+                # LLM 응답을 대화 기록에 추가
+                self.conversation_history['messages'].append({
+                    'role': 'assistant',
+                    'content': f"Edit Advice: {response}"
+                })
+
                 response_json = json.dumps({"edit_advice": response})
                 
                 QMetaObject.invokeMethod(
@@ -983,12 +1024,14 @@ Model settings changed:
         clean_content = BeautifulSoup(content, 'html.parser').get_text()
         
         current_cloze_number = card_ord + 1
-        cloze_pattern = re.compile(r'\{\{c' + str(current_cloze_number) + r'::(.*?)\}\}')
+        # 현재 cloze 번호에 해당하는 패턴만 정확히 매칭
+        cloze_pattern = re.compile(r'\{\{c' + str(current_cloze_number) + r'::(.*?)(?:\|\|.*?)?\}\}')
         matches = cloze_pattern.findall(content)
         
         if matches:
-            card_answers = [matches[0]]
-            logger.debug(f"Cloze card #{current_cloze_number} - Content: {clean_content}, Answer: {card_answers[0]}")
+            # 첫 번째 매치만 사용 (동일한 번호의 cloze가 여러 개 있을 경우)
+            card_answers = [matches[0].strip()]
+            logger.debug(f"Cloze card #{current_cloze_number} - Content: {clean_content}, Current Cloze Answer: {card_answers[0]}")
         else:
             card_answers = []
             logger.debug(f"No answer found for cloze #{current_cloze_number}")
@@ -1070,6 +1113,19 @@ Model settings changed:
         text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
         text = text.replace('\n', '<br>')
         return text
+
+    def clear_conversation_history(self):
+        """Clears the conversation history"""
+        logger.debug("Clearing conversation history")
+        self.conversation_history = {
+            'messages': [],
+            'card_context': None,
+            'current_card_id': None
+        }
+        self.last_response = None
+        self.last_user_answer = None
+        self.last_elapsed_time = None
+
 logger.info("Bridge initialized")
 
 def showInfo(message):
