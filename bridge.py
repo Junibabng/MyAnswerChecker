@@ -847,20 +847,29 @@ Model settings changed:
             return None
 
     def _clean_text(self, text):
-        """Clean text by removing code block markers"""
-        return text.replace('```json', '').replace('```', '').strip()
+        """Clean text by removing code block markers and normalizing whitespace"""
+        # 코드 블록 마커 제거
+        text = re.sub(r'```json\s*|\s*```', '', text)
+        # 마크다운 포� 제거
+        text = re.sub(r'\*\*.*?\*\*', '', text)
+        text = re.sub(r'{{c\d+::.*?}}', '', text)
+        # 줄바꿈 및 �백 정규화
+        text = text.replace('\n', ' ').replace('\r', '')
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip()
 
     def _find_valid_json(self, text):
-        """Find and validate JSON in text"""
+        """Find and validate JSON in text with improved pattern matching"""
         try:
-            # 코드 블록 마커 제거
-            text = re.sub(r'```json\s*|\s*```', '', text)
+            text = self._clean_text(text)
             
-            # JSON 패턴 찾기
+            # 통합된 JSON 패��
             patterns = [
-                # 완전한 JSON 객체
-                r'({[^{}]*"evaluation"\s*:[^{}]*"recommendation"\s*:[^{}]*"answer"\s*:[^{}]*"reference"\s*:[^{}]*})',
-                # 중첩된 중괄호를 포함할 수 있는 더 일반적인 패턴
+                # 엄격한 패턴 (필드 순서 지정)
+                r'({[^{}]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})',
+                # 유연한 패턴 (필드 순서 무관)
+                r'({(?:[^{}]|{[^{}]*})*"evaluation"\s*:\s*"[^"]*?".*?"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)".*?"answer"\s*:\s*"[^"]*?".*?"reference"\s*:\s*"[^"]*?".*?})',
+                # 가장 유연한 패턴 (마지막 시도)
                 r'({(?:[^{}]|{[^{}]*})*})'
             ]
             
@@ -883,11 +892,10 @@ Model settings changed:
                         logger.debug(f"Unexpected error processing JSON match: {str(e)}")
                         continue
             
-            # JSON을 찾지 못한 경우
             logger.error("No valid JSON pattern found in response")
-            logger.debug(f"Raw text: {text[:200]}...")  # 처음 200자만 로깅
+            logger.debug(f"Raw text: {text[:200]}...")
             return None
-            
+
         except Exception as e:
             logger.error(f"Error in _find_valid_json: {str(e)}")
             return None
@@ -915,12 +923,30 @@ Model settings changed:
             return json_str
 
     def _validate_json_fields(self, parsed_json):
-        """Validate required fields in parsed JSON"""
-        required_fields = ["evaluation", "recommendation", "answer"]
-        if not all(field in parsed_json for field in required_fields):
-            logger.debug(f"Missing required fields in JSON: {parsed_json.keys()}")
+        """Validate required fields in parsed JSON with improved validation"""
+        try:
+            # 필수 필드 통일
+            required_fields = ["evaluation", "recommendation", "answer", "reference"]
+            if not all(field in parsed_json for field in required_fields):
+                logger.debug(f"Missing required fields in JSON: {parsed_json.keys()}")
+                return False
+            
+            # recommendation 값 검증
+            valid_recommendations = ["Again", "Hard", "Good", "Easy"]
+            if parsed_json["recommendation"] not in valid_recommendations:
+                logger.debug(f"Invalid recommendation value: {parsed_json['recommendation']}")
+                return False
+            
+            # 필드 값이 비�있지 않은지 확인
+            if not all(parsed_json[field].strip() for field in required_fields):
+                logger.debug("Empty required fields found")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in _validate_json_fields: {str(e)}")
             return False
-        return True
 
     def get_card_content(self):
         """Returns the current card's content and answer."""

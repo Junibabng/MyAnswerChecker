@@ -990,7 +990,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 self.last_difficulty_message = f"""
                 <div class="system-message-container">
                     <div class="system-message">
-                        <p>LLM의 추천에 따라 '<span class="recommendation {self.get_recommendation_class(recommendation)}">{recommendation}</span>' 난이도로 평가했습니다.</p>
+                        <p>LLM의 추천에 따라 <span class="recommendation {self.get_recommendation_class(recommendation)}">{recommendation}</span> 난이도로 평가했습니다.</p>
                     </div>
                     <div class="message-time">{current_time}</div>
                 </div>
