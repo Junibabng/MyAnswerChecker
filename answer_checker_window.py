@@ -610,7 +610,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         if text is None:
             return ""
         text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
-        text.replace('\n', '<br>')
+        text = text.replace('\n', '<br>')
         return text
 
     def send_answer(self):

@@ -1034,7 +1034,7 @@ Model settings changed:
         if text is None:
             return ""
         text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
-        text.replace('\n', '<br>')
+        text = text.replace('\n', '<br>')
         return text
 logger.info("Bridge initialized")
 
