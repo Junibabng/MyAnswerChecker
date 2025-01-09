@@ -4,6 +4,8 @@ import os
 import time
 from abc import ABC, abstractmethod
 
+logger = logging.getLogger(__name__)
+
 class RetryWithExponentialBackoff:
     """지수 백오프를 사용한 재시도 데코레이터"""
     def __init__(self, max_retries=3, base_delay=1, max_delay=8):
@@ -89,7 +91,7 @@ class GeminiProvider(LLMProvider):
     def __init__(self, api_key, model_name="gemini-2.0-flash-exp"):
         self.api_key = api_key
         self.model_name = model_name
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
+        self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}"
         self.system_prompt = "You are a helpful assistant."
 
     def set_system_prompt(self, prompt):
@@ -103,26 +105,59 @@ class GeminiProvider(LLMProvider):
         return self.generate_response(messages, temperature)
 
     def generate_response(self, messages, temperature=0.7):
+        url = f"{self.base_url}:generateContent?key={self.api_key}"
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        # 시스템 프롬프트와 사용자 메시지 결합
+        combined_message = f"{self.system_prompt}\n\n"
+        for message in messages:
+            combined_message += f"{message['content']}\n"
+
+        data = {
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": combined_message}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": temperature,
+                "topK": 40,
+                "topP": 0.95,
+                "maxOutputTokens": 8192,
+                "responseMimeType": "text/plain"
+            }
+        }
+
         try:
-            genai.configure(api_key=self.api_key)
-            model = genai.GenerativeModel(self.model_name)
+            response = self._make_api_request(headers, data, url)
+            logger.debug("Raw API Response: %s", response)  # 전체 응답 로깅
             
-            # 시스템 프롬프트와 메시지들을 결합
-            combined_prompt = f"{self.system_prompt}\n\n"
-            for message in messages:
-                role = message.get("role", "user")
-                content = message.get("content", "")
-                combined_prompt += f"{role}: {content}\n"
-            
-            response = model.generate_content(
-                combined_prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=temperature
-                )
-            )
-            
-            return response.text
-            
+            # Gemini API 응답 구조 처리
+            if 'candidates' in response and len(response['candidates']) > 0:
+                candidate = response['candidates'][0]
+                
+                # 다양한 응답 구조 처리
+                if 'content' in candidate and 'parts' in candidate['content']:
+                    text = candidate['content']['parts'][0].get('text', '')
+                elif 'text' in candidate:
+                    text = candidate['text']
+                else:
+                    logger.error("No text found in response: %s", candidate)
+                    raise ValueError("No text content in API response")
+                
+                if not text.strip():  # 빈 응답 체크
+                    logger.warning("Empty response received from API")
+                    return "죄송합니다. 응답을 생성하는 데 문제가 발생했습니다. 다시 시도해주세요."
+                    
+                return text
+            else:
+                logger.error("Unexpected response structure: %s", response)
+                raise ValueError("Invalid response structure from Gemini API")
+                
         except Exception as e:
             logger.exception("Error generating Gemini response: %s", e)
             raise
