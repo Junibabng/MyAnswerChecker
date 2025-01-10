@@ -885,10 +885,34 @@ Model settings changed:
             # Remove code block markers and clean text
             text = self._clean_text(text)
             
-            # Find and validate JSON
-            json_str = self._find_valid_json(text)
-            if json_str:
-                return json_str
+            # Try to find JSON block with code block markers first
+            json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', text)
+            if json_match:
+                try:
+                    json_str = json_match.group(1)
+                    json_str = self._normalize_json_string(json_str)
+                    parsed = json.loads(json_str)
+                    if self._validate_json_fields(parsed):
+                        return json_str
+                except:
+                    pass
+
+            # If that fails, try to find any JSON-like structure
+            try:
+                # Find the last occurrence of a JSON-like structure
+                json_matches = list(re.finditer(r'{[\s\S]*?}', text))
+                if json_matches:
+                    for match in reversed(json_matches):
+                        try:
+                            json_str = match.group(0)
+                            json_str = self._normalize_json_string(json_str)
+                            parsed = json.loads(json_str)
+                            if self._validate_json_fields(parsed):
+                                return json_str
+                        except:
+                            continue
+            except:
+                pass
             
             return None
         except Exception as e:
@@ -915,9 +939,9 @@ Model settings changed:
             # 통합된 JSON 패턴
             patterns = [
                 # 엄격한 패턴 (필드 순서 지정)
-                r'({[^{}]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})',
+                r'({[^{}]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"(?:[^"\\]|\\.)*"\s*,\s*"reference"\s*:\s*"(?:[^"\\]|\\.)*"\s*})',
                 # 유연한 패턴 (필드 순서 무관)
-                r'({(?:[^{}]|{[^{}]*})*"evaluation"\s*:\s*"[^"]*?".*?"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)".*?"answer"\s*:\s*"[^"]*?".*?"reference"\s*:\s*"[^"]*?".*?})',
+                r'({(?:[^{}]|{[^{}]*})*"evaluation"\s*:\s*"(?:[^"\\]|\\.)*".*?"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)".*?"answer"\s*:\s*"(?:[^"\\]|\\.)*".*?"reference"\s*:\s*"(?:[^"\\]|\\.)*".*?})',
                 # 가장 유연한 패턴 (마지막 시도)
                 r'({(?:[^{}]|{[^{}]*})*})'
             ]
