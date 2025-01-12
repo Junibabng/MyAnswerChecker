@@ -134,14 +134,59 @@ class Bridge(QObject):
                 answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
             return True
         except json.JSONDecodeError:
-            # JSON이 완전하지 않으면 버퍼에 추가
+            # JSON이 완전하지 않은 경우
             self.partial_response += response_text
+            
+            # 일정 시간(10초) 이상 응답이 완성되지 않으면 현재까지의 응답을 출력
+            if len(self.partial_response) > 0:
+                try:
+                    # 마지막 완성된 JSON 찾기
+                    json_pattern = r'\{[^}]+\}'
+                    matches = list(re.finditer(json_pattern, self.partial_response))
+                    if matches:
+                        last_json = matches[-1].group(0)
+                        try:
+                            response_json = json.loads(last_json)
+                            html_content = self._generate_response_html(response_json)
+                            if answer_checker_window:
+                                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
+                            self.partial_response = ""  # 버퍼 초기화
+                            return True
+                        except:
+                            pass
+                    
+                    # JSON 파싱 실패시 텍스트 그대로 출력
+                    if answer_checker_window:
+                        html_content = f"""
+                        <div class="system-message-container">
+                            <div class="system-message">
+                                <p>{self.markdown_to_html(self.partial_response)}</p>
+                            </div>
+                            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+                        </div>
+                        """
+                        answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
+                        self.partial_response = ""  # 버퍼 초기화
+                        return True
+                except Exception as e:
+                    logger.error(f"Error processing partial response: {str(e)}")
+            
             logger.warning("Incomplete JSON received, buffering...")
             return False
-        except Exception:
-            # 기타 예외 처리
+        except Exception as e:
             logger.exception("예기치 않은 오류")
-            self._clear_request_data(request_id)
+            if answer_checker_window:
+                error_html = f"""
+                <div class="system-message-container">
+                    <div class="system-message">
+                        <p style='color: red;'>오류가 발생했습니다: {str(e)}</p>
+                    </div>
+                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+                </div>
+                """
+                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
+            self.partial_response = ""  # 버퍼 초기화
+            return True
 
     def _generate_response_html(self, response_json):
         """Generate HTML content from response JSON"""
