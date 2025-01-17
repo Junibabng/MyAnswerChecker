@@ -28,10 +28,13 @@ class AnswerCheckerWindow(QDialog):
         self.layout = QVBoxLayout(self)
         self.last_response = None
         self.is_webview_initialized = False
-        self.is_webview_loading = False  # 웹뷰 로딩 상태 추적
+        self.is_webview_loading = False
+        self.initialization_lock = threading.Lock()
+        self.initialization_event = threading.Event()
+        self._saved_messages = []  # 저장된 메시지 초기화
         self.last_difficulty_message = None
         self.last_question_time = 0
-        self.message_containers = {}  # 메시지 컨테이너 ID 저장
+        self.message_containers = {}
         
         self.input_label = QLabel("Enter your answer:")
         self.input_field = QLineEdit()
@@ -309,56 +312,119 @@ class AnswerCheckerWindow(QDialog):
         self.is_processing = False
 
     def initialize_webview(self):
-        """Initializes the webview with default HTML and sets the background color explicitly."""
-        if not self.is_webview_initialized and not self.is_webview_loading:
-            logger.debug("=== Starting WebView Initialization ===")
-            self.is_webview_loading = True
-            try:
-                self.web_view.setHtml(self.default_html)
-                self.web_view.page().setBackgroundColor(Qt.GlobalColor.transparent)
-                self._saved_messages = []
+        """WebView 초기화 및 설정"""
+        try:
+            with self.initialization_lock:
+                if self.is_webview_loading or self.is_webview_initialized:
+                    return
                 
-                # 웹뷰 로드 완료 이벤트 연결
-                self.web_view.loadFinished.connect(self._on_initial_load)
+                self.is_webview_loading = True
                 
-                if self.last_difficulty_message:
-                    self._saved_messages.append(self.last_difficulty_message)
-                    
-                logger.debug("WebView initialization started successfully")
-            except Exception as e:
-                logger.error(f"Error during WebView initialization: {str(e)}")
-                self.is_webview_loading = False
-                self._show_error_message("WebView 초기화 중 오류가 발생했습니다.")
+            channel = QWebChannel(self.web_view)
+            self.web_view.page().setWebChannel(channel)
+            channel.registerObject("bridge", self.bridge)
+            
+            self.web_view.loadFinished.connect(self._on_webview_load_finished)
+            self.web_view.setHtml(self.default_html)
+            
+            logger.info("WebView 초기화 시작됨")
+        except Exception as e:
+            logger.error(f"WebView 초기화 중 오류 발생: {str(e)}")
+            self.is_webview_loading = False
+            self.initialization_event.clear()
+            raise
 
-    def _on_initial_load(self, ok):
-        """웹뷰 초기 로드가 완료되었을 때 호출됩니다."""
-        self.is_webview_loading = False
-        if ok:
-            logger.debug("WebView initial load completed successfully")
-            self.is_webview_initialized = True
-            
-            # 초기 메시지 표시
-            welcome_message = """
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p>카드 리뷰를 진행해주세요.</p>
-                    <p class="sub-text">답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요.</p>
+    def _check_webview_state(self):
+        """WebView의 상태를 확인하고 필요한 경우 초기화를 시도합니다."""
+        try:
+            with self.initialization_lock:
+                if not self.is_webview_initialized and not self.is_webview_loading:
+                    logger.debug("WebView not initialized, starting initialization")
+                    self.initialize_webview()
+                    return False
+                elif self.is_webview_loading:
+                    logger.debug("WebView is currently loading")
+                    return False
+                return True
+        except Exception as e:
+            logger.error(f"WebView 상태 확인 중 오류: {str(e)}")
+            return False
+
+    def _on_webview_load_finished(self, ok):
+        """WebView 로드 완료 핸들러"""
+        try:
+            if ok:
+                with self.initialization_lock:
+                    self.is_webview_initialized = True
+                    self.is_webview_loading = False
+                    self.initialization_event.set()
+                logger.info("WebView 초기화 완료")
+                
+                # 웰컴 메시지 표시
+                welcome_message = f"""
+                <div class="system-message-container">
+                    <div class="system-message">
+                        <p>카드 리뷰를 진행해주세요.</p>
+                        <p class="sub-text">답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요.</p>
+                    </div>
+                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
                 </div>
-                <div class="message-time">{}</div>
-            </div>
-            """.format(datetime.now().strftime("%p %I:%M"))
-            
-            self.append_to_chat(welcome_message)
-            
-            # 저장된 메시지 처리
-            self._process_saved_messages()
-            
-            # 입력 필드에 포커스
-            self.input_field.setFocus()
-        else:
-            logger.error("WebView initial load failed")
-            self._show_error_message("WebView 초기화에 실패했습니다.")
-            self.initialize_webview()  # 재시도
+                """
+                self.append_to_chat(welcome_message)
+                
+                # 저장된 메시지 처리
+                self._process_saved_messages()
+                
+                # 입력 필드에 포커스
+                self.input_field.setFocus()
+            else:
+                logger.error("WebView 로드 실패")
+                self.is_webview_loading = False
+                self.initialization_event.clear()
+                self._show_error_message("WebView 초기화에 실패했습니다.")
+        except Exception as e:
+            logger.error(f"WebView 로드 완료 처리 중 오류: {str(e)}")
+            self.is_webview_loading = False
+            self.initialization_event.clear()
+            self._show_error_message(f"WebView 초기화 중 오류가 발생했습니다: {str(e)}")
+
+    def _is_webview_ready(self):
+        """WebView가 사용 가능한 상태인지 확인"""
+        return self.is_webview_initialized and not self.is_webview_loading
+
+    def wait_for_webview_ready(self, timeout=10):
+        """WebView 초기화 완료를 기다림"""
+        return self.initialization_event.wait(timeout)
+
+    def append_to_chat(self, html_content):
+        """채팅 메시지 추가"""
+        if not self._is_webview_ready():
+            if not self.wait_for_webview_ready():
+                logger.error("WebView 초기화 대기 시간 초과")
+                self._show_error_message("WebView 초기화 대기 시간이 초과되었습니다.")
+                return False
+        
+        try:
+            js_code = f'''
+                (function() {{
+                    const chatContainer = document.querySelector('.chat-container');
+                    if (chatContainer) {{
+                        chatContainer.insertAdjacentHTML('beforeend', {json.dumps(html_content)});
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                        return true;
+                    }}
+                    return false;
+                }})()
+            '''
+            self.web_view.page().runJavaScript(
+                js_code,
+                lambda success: logger.debug(f"메시지 추가 {'성공' if success else '실패'}")
+            )
+            return True
+        except Exception as e:
+            logger.error(f"채팅 메시지 추가 중 오류: {str(e)}")
+            self._show_error_message(f"메시지 추가 중 오류가 발생했습니다: {str(e)}")
+            return False
 
     def _process_saved_messages(self):
         """저장된 메시지들을 처리합니다."""
@@ -387,17 +453,6 @@ class AnswerCheckerWindow(QDialog):
         
         # 처리 완료된 메시지 초기화
         self._saved_messages = []
-
-    def _check_webview_state(self):
-        """WebView의 상태를 확인하고 필요한 경우 초기화합니다."""
-        if not self.is_webview_initialized and not self.is_webview_loading:
-            logger.debug("WebView not initialized, starting initialization")
-            self.initialize_webview()
-            return False
-        elif self.is_webview_loading:
-            logger.debug("WebView is currently loading")
-            return False
-        return True
 
     def show_default_message(self):
         """기본 메시지를 표시합니다."""
