@@ -212,6 +212,9 @@ class Bridge(QObject):
         if request_id not in self.response_buffer:
             self.response_buffer[request_id] = ""
             self.response_wait_timers[request_id] = time.time()
+            # 새로운 메시지 컨테이너 생성
+            if answer_checker_window:
+                answer_checker_window.create_message_container(request_id)
         
         # Update buffer
         self.response_buffer[request_id] += chunk
@@ -222,17 +225,25 @@ class Bridge(QObject):
             self._handle_response_timeout(request_id, data_type)
             return
         
-        # Process response based on type
+        # 실시간으로 청크 업데이트
+        if answer_checker_window:
+            answer_checker_window.update_message_chunk(request_id, chunk, data_type)
+        
+        # Process complete response
         if data_type == "response":
             if self.is_complete_response(self.response_buffer[request_id]):
                 if self._process_complete_response(self.response_buffer[request_id]):
                     self._clear_request_data(request_id)
         elif data_type in ["question", "joke", "edit_advice"]:
-            if answer_checker_window:
-                answer_checker_window.web_view.setHtml(
-                    answer_checker_window.default_html + 
-                    self.markdown_to_html(self.response_buffer[request_id])
-                )
+            try:
+                # JSON 파싱 시도
+                response_json = json.loads(self.response_buffer[request_id])
+                if answer_checker_window:
+                    answer_checker_window.finalize_message(request_id, response_json, data_type)
+                self._clear_request_data(request_id)
+            except json.JSONDecodeError:
+                # 아직 완성되지 않은 JSON이면 계속 누적
+                pass
 
     def is_complete_response(self, response_text):
         """
