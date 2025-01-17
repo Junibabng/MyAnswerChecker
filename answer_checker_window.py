@@ -16,6 +16,7 @@ import re
 import time
 import logging
 import threading
+import uuid  # UUID 추가
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,11 @@ class AnswerCheckerWindow(QDialog):
         self.last_difficulty_message = None
         self.last_question_time = 0
         self.message_containers = {}
+        
+        # 가비지 컬렉션 타이머 설정
+        self.gc_timer = QTimer(self)
+        self.gc_timer.timeout.connect(self.clear_message_containers_periodically)
+        self.gc_timer.start(300000)  # 5분마다 실행
         
         self.input_label = QLabel("Enter your answer:")
         self.input_field = QLineEdit()
@@ -1286,122 +1292,44 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             lambda result: logger.debug(f"Current chat content: {result[:100]}...")  # 처음 100자만 로깅
         )
 
-    def create_message_container(self, request_id):
-        """새로운 메시지 컨테이너를 생성하고 ID를 저장합니다."""
-        container_id = f"message-container-{request_id}"
-        self.message_containers[request_id] = container_id
+    def create_message_container(self, request_id=None):
+        """메시지 컨테이너를 생성하고 초기화합니다."""
+        # request_id가 없는 경우 UUID 생성
+        if request_id is None:
+            request_id = str(uuid.uuid4())
+            
+        if request_id in self.message_containers:
+            logger.debug(f"Container already exists for request_id: {request_id}, reusing existing container")
+            # 기존 컨테이너가 완료 상태인 경우 새로운 컨테이너로 교체
+            if self.message_containers[request_id]['is_complete']:
+                logger.debug(f"Existing container is complete, creating new container for request_id: {request_id}")
+                self.message_containers[request_id] = {
+                    'content': '',
+                    'created_at': datetime.now(),
+                    'is_complete': False,
+                    'container_id': f"message-container-{request_id}"  # DOM에서 사용할 고유 ID
+                }
+        else:
+            logger.debug(f"Creating new container with UUID: {request_id}")
+            self.message_containers[request_id] = {
+                'content': '',
+                'created_at': datetime.now(),
+                'is_complete': False,
+                'container_id': f"message-container-{request_id}"  # DOM에서 사용할 고유 ID
+            }
         
-        script = f"""
-        (function() {{
-            var chatContainer = document.querySelector('.chat-container');
-            if (chatContainer) {{
-                var container = document.createElement('div');
-                container.id = '{container_id}';
-                container.className = 'system-message-container';
-                container.innerHTML = `
-                    <div class="system-message">
-                        <div class="message-content"></div>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                `;
-                chatContainer.appendChild(container);
-                window.scrollTo(0, document.body.scrollHeight);
-                return true;
-            }}
-            return false;
-        }})();
-        """
-        self.web_view.page().runJavaScript(script)
+        return self.message_containers[request_id]
 
-    def update_message_chunk(self, request_id, chunk, data_type):
-        """메시지 컨테이너의 내용을 실시간으로 업데이트합니다."""
-        if request_id not in self.message_containers:
-            return
-            
-        container_id = self.message_containers[request_id]
-        escaped_chunk = chunk.replace('\\', '\\\\').replace('`', '\\`').replace('$', '\\$')
+    def clear_message_containers_periodically(self):
+        """30분 이상 경과된 메시지 컨테이너를 정리합니다."""
+        current_time = datetime.now()
+        containers_to_remove = []
         
-        script = f"""
-        (function() {{
-            var container = document.getElementById('{container_id}');
-            if (container) {{
-                var content = container.querySelector('.message-content');
-                if (content) {{
-                    content.innerHTML += `{escaped_chunk}`;
-                    window.scrollTo(0, document.body.scrollHeight);
-                    return true;
-                }}
-            }}
-            return false;
-        }})();
-        """
-        self.web_view.page().runJavaScript(script)
-
-    def finalize_message(self, request_id, response_json, data_type):
-        """메시지를 최종 형식으로 변환합니다."""
-        if request_id not in self.message_containers:
-            return
-            
-        container_id = self.message_containers[request_id]
+        for request_id, container in self.message_containers.items():
+            time_diff = current_time - container['created_at']
+            if time_diff.total_seconds() > 1800:  # 30분 (1800초)
+                containers_to_remove.append(request_id)
         
-        # 응답 타입에 따른 HTML 생성
-        if data_type == "response":
-            evaluation = response_json.get("evaluation", "No evaluation")
-            recommendation = response_json.get("recommendation", "No recommendation")
-            answer = response_json.get("answer", "")
-            reference = response_json.get("reference", "")
-            
-            html_content = f"""
-                <h2>평가 결과</h2>
-                <div class="evaluation">{self.markdown_to_html(evaluation)}</div>
-                <div class="recommendation {self.get_recommendation_class(recommendation)}">{recommendation}</div>
-                <div class="answer"><p>{self.markdown_to_html(answer)}</p></div>
-                <div class="reference"><p>{self.markdown_to_html(reference)}</p></div>
-            """
-        elif data_type == "joke":
-            joke = response_json.get("joke", "농담 생성 실패")
-            html_content = f"""
-                <h3>재미있는 농담 😆</h3>
-                <p>{self.markdown_to_html(joke)}</p>
-            """
-        elif data_type == "edit_advice":
-            edit_advice = response_json.get("edit_advice", "조언을 생성할 수 없습니다.")
-            html_content = f"""
-                <h3>카드 수정 조언 ✏️</h3>
-                <p>{self.markdown_to_html(edit_advice)}</p>
-            """
-        else:  # question
-            answer = response_json.get("answer", "답변 없음")
-            html_content = f"""
-                <h3>추가 답변</h3>
-                <p>{self.markdown_to_html(answer)}</p>
-            """
-            
-        # 현재 모델 정보 추가
-        settings = QSettings("LLM_response_evaluator", "Settings")
-        provider_type = settings.value("providerType", "openai").lower()
-        model_name = settings.value("modelName" if provider_type == "openai" else "geminiModel", "Unknown Model")
-        
-        script = f"""
-        (function() {{
-            var container = document.getElementById('{container_id}');
-            if (container) {{
-                var modelInfo = document.createElement('div');
-                modelInfo.className = 'model-info';
-                modelInfo.textContent = '{model_name}';
-                container.insertBefore(modelInfo, container.firstChild);
-                
-                var content = container.querySelector('.message-content');
-                if (content) {{
-                    content.innerHTML = `{html_content}`;
-                    window.scrollTo(0, document.body.scrollHeight);
-                    return true;
-                }}
-            }}
-            return false;
-        }})();
-        """
-        self.web_view.page().runJavaScript(script)
-        
-        # 메시지 컨테이너 ID 제거
-        del self.message_containers[request_id]
+        for request_id in containers_to_remove:
+            del self.message_containers[request_id]
+            logger.info(f"Removed old message container with request_id: {request_id}")
