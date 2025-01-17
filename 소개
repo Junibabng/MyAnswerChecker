@@ -1,0 +1,132 @@
+# MyAnswerChecker 플러그인 소개
+
+## 1. 기본 정보
+- 플러그인 이름: MyAnswerChecker
+- 목적: Anki 카드 학습 시 사용자의 답변을 AI를 통해 평가하고 피드백을 제공하는 플러그인
+- Anki 호환 버전: 2.1.50 이상
+- 개발 환경: Windows 10
+
+## 2. 주요 기능과 구조
+### 핵심 기능
+- AI를 통한 답변 평가 및 피드백 제공
+- 학습 시간 측정 및 난이도 추천
+- 카드 편집 조언 기능
+- 학습 분위기 전환을 위한 농담 기능
+- 실시간 스트리밍 응답 표시
+
+### 주요 파일 구조
+- `main.py`: 플러그인의 메인 로직, 설정 관리, Anki와의 통합
+- `answer_checker_window.py`: 답변 체크 창 UI 및 관련 기능 구현
+- `bridge.py`: Python과 JavaScript 간의 통신 관리
+- `providers.py`: OpenAI, Gemini 등 AI 제공자 연동 관리
+
+### 사용된 주요 라이브러리
+- PyQt6: UI 구현
+- PyQt6-WebEngine: 웹 기반 채팅 인터페이스
+- beautifulsoup4: HTML 처리
+- requests: API 통신
+
+## 3. 현재 상태
+### 작동 중인 기능
+- AI 기반 답변 평가 시스템
+- 카카오톡 스타일의 채팅 인터페이스
+- 실시간 학습 시간 측정
+- 난이도 기반 학습 추천
+- AI 기반 카드 편집 조언
+- 학습 분위기 전환용 농담 기능
+
+### 알려진 문제점
+- WebView 초기화 관련 동기화 이슈 가능성
+- 응답 처리 중 에러 발생 시 예외 처리 필요
+- 메시지 컨테이너 관리 최적화 필요
+
+## 4. 원하는 변경사항
+### 수정 목표
+- WebView 초기화 프로세스 안정화
+- 에러 처리 및 로깅 시스템 개선
+- 메시지 스트리밍 성능 최적화
+- UI/UX 개선
+
+### 기대하는 결과
+- 더 안정적인 플러그인 동작
+- 향상된 사용자 경험
+- 더 빠른 응답 시간
+
+## 5. 제약사항
+### 필수 조건
+- OpenAI 또는 Gemini API 키 필요
+- PyQt6 6.4.0 이상 버전 필요
+- 안정적인 인터넷 연결 필요
+
+### 참고사항
+- API 키는 보안을 위해 로컬에 저장
+- 디버그 로그는 `MyAnswerChecker_debug.log` 파일에 기록
+- 설정은 QSettings를 통해 관리됨
+
+## 6. 주요 변수 및 함수
+
+### 전역 변수
+- `bridge`: Python과 JavaScript 간의 통신을 담당하는 전역 브릿지 객체
+- `answer_checker_window`: 답변 체크 창의 전역 인스턴스
+- `mw.llm_addon_settings`: Anki 메인 윈도우에 저장되는 전역 설정 객체
+
+### 중요 상태 변수
+#### AnswerCheckerWindow 클래스
+- `is_webview_initialized`: WebView 초기화 상태 추적
+- `last_response`: 마지막 AI 응답 저장
+- `last_difficulty_message`: 마지막 난이도 추천 메시지
+- `last_question_time`: 문제 시작 시간 기록
+- `message_containers`: 채팅 메시지 컨테이너 ID 관리
+
+### 핵심 함수
+#### 초기화 관련
+- `on_profile_loaded()`: 프로필 로드 시 플러그인 초기화
+- `setup_webchannel()`: WebChannel 설정 및 브릿지 연결
+- `load_global_settings()`: 전역 설정 로드
+
+#### 이벤트 핸들링
+- `on_prepare_card()`: 새 카드 표시 시 초기화
+- `reviewer_did_show_question`: 질문 표시 시 호출
+- `reviewer_did_show_answer`: 답변 표시 시 호출
+- `reviewer_did_answer_card`: 카드 답변 후 호출
+
+#### AI 통신
+- `LLMProvider.call_api()`: AI 제공자와의 통신
+- `Bridge.update_response_chunk()`: 스트리밍 응답 처리
+- `Bridge.sendResponse`: AI 응답 신호 발신
+
+### 주의사항
+1. **상태 관리**
+   - `is_webview_initialized` 상태 변경 시 동기화 주의
+   - `last_response`와 `last_difficulty_message` 업데이트 시점 관리 필요
+
+2. **타이밍 관련**
+   - `last_question_time` 정확한 기록 필요
+   - 타이머 업데이트와 난이도 계산 동기화 주의
+
+3. **메모리 관리**
+   - `message_containers` 주기적 정리 필요
+   - 웹뷰 메모리 누수 방지
+
+4. **에러 처리**
+   - AI API 호출 실패 시 적절한 예외 처리
+   - WebChannel 통신 오류 대응
+
+5. **설정 관리**
+   - `mw.llm_addon_settings` 변경 시 즉시 저장
+   - API 키 보안 관리
+
+### 확장 시 고려사항
+1. **새로운 AI 제공자 추가**
+   - `LLMProvider` 추상 클래스 구현
+   - `providers.py`에 새 클래스 추가
+   - 설정 다이얼로그 UI 수정
+
+2. **UI 커스터마이징**
+   - `default_html` 템플릿 수정
+   - CSS 스타일 변경 시 웹뷰 성능 고려
+
+3. **새로운 기능 추가**
+   - `Bridge` 클래스에 새로운 시그널 추가
+   - 적절한 이벤트 훅 사용
+   - 메모리 사용량 모니터링

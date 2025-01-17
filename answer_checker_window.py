@@ -28,6 +28,7 @@ class AnswerCheckerWindow(QDialog):
         self.layout = QVBoxLayout(self)
         self.last_response = None
         self.is_webview_initialized = False
+        self.is_webview_loading = False  # 웹뷰 로딩 상태 추적
         self.last_difficulty_message = None
         self.last_question_time = 0
         self.message_containers = {}  # 메시지 컨테이너 ID 저장
@@ -309,23 +310,33 @@ class AnswerCheckerWindow(QDialog):
 
     def initialize_webview(self):
         """Initializes the webview with default HTML and sets the background color explicitly."""
-        if not self.is_webview_initialized:
-            logger.debug("=== WebView Initialization ===")
-            self.web_view.setHtml(self.default_html)
-            self.is_webview_initialized = True
-            self.web_view.page().setBackgroundColor(Qt.GlobalColor.transparent)
-            self._saved_messages = []
-            
-            # 웹뷰 로드 완료 이벤트 연결
-            self.web_view.loadFinished.connect(self._on_initial_load)
-            
-            if self.last_difficulty_message:
-                self._saved_messages.append(self.last_difficulty_message)
+        if not self.is_webview_initialized and not self.is_webview_loading:
+            logger.debug("=== Starting WebView Initialization ===")
+            self.is_webview_loading = True
+            try:
+                self.web_view.setHtml(self.default_html)
+                self.web_view.page().setBackgroundColor(Qt.GlobalColor.transparent)
+                self._saved_messages = []
+                
+                # 웹뷰 로드 완료 이벤트 연결
+                self.web_view.loadFinished.connect(self._on_initial_load)
+                
+                if self.last_difficulty_message:
+                    self._saved_messages.append(self.last_difficulty_message)
+                    
+                logger.debug("WebView initialization started successfully")
+            except Exception as e:
+                logger.error(f"Error during WebView initialization: {str(e)}")
+                self.is_webview_loading = False
+                self._show_error_message("WebView 초기화 중 오류가 발생했습니다.")
 
     def _on_initial_load(self, ok):
         """웹뷰 초기 로드가 완료되었을 때 호출됩니다."""
+        self.is_webview_loading = False
         if ok:
             logger.debug("WebView initial load completed successfully")
+            self.is_webview_initialized = True
+            
             # 초기 메시지 표시
             welcome_message = """
             <div class="system-message-container">
@@ -339,14 +350,54 @@ class AnswerCheckerWindow(QDialog):
             
             self.append_to_chat(welcome_message)
             
-            # 마지막 난이도 메시지가 있다면 표시
-            if self.last_difficulty_message:
-                self.append_to_chat(self.last_difficulty_message)
+            # 저장된 메시지 처리
+            self._process_saved_messages()
             
             # 입력 필드에 포커스
             self.input_field.setFocus()
         else:
             logger.error("WebView initial load failed")
+            self._show_error_message("WebView 초기화에 실패했습니다.")
+            self.initialize_webview()  # 재시도
+
+    def _process_saved_messages(self):
+        """저장된 메시지들을 처리합니다."""
+        if not self._saved_messages:
+            return
+
+        logger.debug(f"Processing {len(self._saved_messages)} saved messages")
+        
+        for message in self._saved_messages:
+            if isinstance(message, dict):
+                # 타입별 메시지 처리
+                msg_type = message.get("type")
+                content = message.get("content")
+                
+                if msg_type == "response":
+                    self.display_response(content)
+                elif msg_type == "question":
+                    self.display_question_response(content)
+                elif msg_type == "joke":
+                    self.display_joke(content)
+                elif msg_type == "edit_advice":
+                    self.display_edit_advice(content)
+            else:
+                # 일반 HTML 메시지
+                self.append_to_chat(message)
+        
+        # 처리 완료된 메시지 초기화
+        self._saved_messages = []
+
+    def _check_webview_state(self):
+        """WebView의 상태를 확인하고 필요한 경우 초기화합니다."""
+        if not self.is_webview_initialized and not self.is_webview_loading:
+            logger.debug("WebView not initialized, starting initialization")
+            self.initialize_webview()
+            return False
+        elif self.is_webview_loading:
+            logger.debug("WebView is currently loading")
+            return False
+        return True
 
     def show_default_message(self):
         """기본 메시지를 표시합니다."""
@@ -407,6 +458,9 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def display_loading_animation(self, show):
         """Shows or hides the loading animation in the AI's response."""
+        if not self._check_webview_state():
+            return
+
         logger.debug(f"""
 === Loading Animation Event ===
 Action: {'Show' if show else 'Hide'}
@@ -497,6 +551,11 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def display_response(self, response_json):
         """Displays the LLM response in the webview."""
+        if not self._check_webview_state():
+            logger.debug("Queuing response for later display")
+            self._saved_messages.append({"type": "response", "content": response_json})
+            return
+
         try:
             self.display_loading_animation(False)
             processed_json = self._preprocess_json_string(response_json)
@@ -549,6 +608,11 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def display_question_response(self, response_json):
         """Displays the response to an additional question."""
+        if not self._check_webview_state():
+            logger.debug("Queuing question response for later display")
+            self._saved_messages.append({"type": "question", "content": response_json})
+            return
+
         self.display_loading_animation(False)
         try:
             processed_json = self._preprocess_json_string(response_json)
@@ -596,6 +660,11 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def display_joke(self, response_json):
         """Displays the joke in the webview."""
+        if not self._check_webview_state():
+            logger.debug("Queuing joke for later display")
+            self._saved_messages.append({"type": "joke", "content": response_json})
+            return
+
         self.display_loading_animation(False)
         try:
             processed_json = self._preprocess_json_string(response_json)
@@ -649,6 +718,11 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def display_edit_advice(self, response_json):
         """Displays the card edit advice in the webview."""
+        if not self._check_webview_state():
+            logger.debug("Queuing edit advice for later display")
+            self._saved_messages.append({"type": "edit_advice", "content": response_json})
+            return
+
         self.display_loading_animation(False)
 
         try:
@@ -719,6 +793,10 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def send_answer(self):
         """Submit and process user's answer"""
+        if not self._check_webview_state():
+            self._show_error_message("답변 확인 창을 초기화 중입니다. 잠시만 기다려주세요...")
+            return
+
         user_answer = self.input_field.text().strip()
         if user_answer == "":
             return
@@ -1031,6 +1109,11 @@ This will trigger on_user_answer_card
 
     def append_to_chat(self, html_content):
         """Appends content to the chat container and scrolls to the bottom."""
+        if not self._check_webview_state():
+            logger.debug("Queuing message for later display")
+            self._saved_messages.append(html_content)
+            return
+
         logger.debug(f"""
 === Append to Chat (Detailed) ===
 Content Type: {self._identify_message_type(html_content)}
@@ -1079,6 +1162,10 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def clear_chat(self):
         """채팅 내용을 모두 지우고 새로운 시작 메시지만 표시"""
+        if not self._check_webview_state():
+            self._saved_messages = []  # 저장된 메시지도 모두 지우기
+            return
+
         caller_info = self._get_caller_info()
         logger.debug(f"""
 === Chat Clear Event ===
