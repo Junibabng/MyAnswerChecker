@@ -24,8 +24,9 @@ from aqt.gui_hooks import (
     reviewer_will_show_context_menu,
 )
 from .providers import LLMProvider, OpenAIProvider, GeminiProvider
+import traceback
 
-# Logging setup (Corrected)
+# Logging setup
 import logging
 import os
 
@@ -35,18 +36,64 @@ os.makedirs(addon_dir, exist_ok=True)
 
 # Create a logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Set the minimum logging level
+logger.setLevel(logging.DEBUG)
 
 # Create a file handler
-file_handler = logging.FileHandler(log_file_path)
-file_handler.setLevel(logging.DEBUG)  # Set the minimum logging level for the file handler
+file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
 
-# Create a formatter
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
+# Create formatters
+debug_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s\n'
+    'File: %(filename)s:%(lineno)d\n'
+    'Function: %(funcName)s\n'
+    'Message: %(message)s\n'
+)
 
-# Add the file handler to the logger
+error_formatter = logging.Formatter(
+    '\n=== Error Log ===\n'
+    '%(asctime)s - %(name)s - %(levelname)s\n'
+    'File: %(filename)s:%(lineno)d\n'
+    'Function: %(funcName)s\n'
+    'Message: %(message)s\n'
+    'Stack Trace:\n%(stack_trace)s\n'
+    '================\n'
+)
+
+class ErrorLogFilter(logging.Filter):
+    """에러 로그에 스택 트레이스를 추가하는 필터"""
+    def filter(self, record):
+        if record.levelno >= logging.ERROR:
+            record.stack_trace = traceback.format_stack()
+        return True
+
+# Add formatter and filter to handler
+file_handler.setFormatter(debug_formatter)
+file_handler.addFilter(ErrorLogFilter())
+
+# Add the handler to the logger
 logger.addHandler(file_handler)
+
+def log_error(e, context=None):
+    """상세한 에러 로깅을 위한 유틸리티 함수"""
+    error_info = {
+        'timestamp': datetime.now().isoformat(),
+        'error_type': type(e).__name__,
+        'error_message': str(e),
+        'stack_trace': traceback.format_exc(),
+        'context': context or {}
+    }
+    
+    logger.error(
+        "\n=== Error Details ===\n"
+        f"Time: {error_info['timestamp']}\n"
+        f"Type: {error_info['error_type']}\n"
+        f"Message: {error_info['error_message']}\n"
+        f"Context: {error_info['context']}\n"
+        f"Stack Trace:\n{error_info['stack_trace']}\n"
+        "===================="
+    )
+    return error_info
 
 logger.info("Addon load start")
 
@@ -179,36 +226,54 @@ class Bridge(QObject):
     def _process_complete_response(self, response_text):
         """완전한 응답을 처리하고 UI를 업데이트"""
         try:
+            logger.debug(f"응답 처리 시작:\n{response_text[:200]}...")
+            
             complete_json = self.partial_response + response_text
             response_json = json.loads(complete_json)
             self.partial_response = ""
             
+            logger.debug(f"파싱된 JSON: {response_json}")
+            
             if not isinstance(response_json, dict):
+                logger.error(f"잘못된 JSON 형식: {type(response_json)}")
                 raise ResponseProcessingError("응답이 올바른 JSON 객체가 아닙니다.")
                 
             required_fields = ["evaluation", "recommendation", "answer"]
             missing_fields = [field for field in required_fields if field not in response_json]
             if missing_fields:
+                logger.error(f"필수 필드 누락: {missing_fields}")
                 raise ResponseProcessingError(f"응답에 필수 필드가 누락되었습니다: {', '.join(missing_fields)}")
             
             html_content = self._generate_response_html(response_json)
             if answer_checker_window:
                 answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
+                logger.info("UI 업데이트 완료")
             return True
             
-        except json.JSONDecodeError:
-            logger.warning("불완전한 JSON 응답을 받았습니다. 버퍼링 중...")
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "불완전한 JSON 응답:\n"
+                f"Current Buffer: {self.partial_response[:200]}...\n"
+                f"New Text: {response_text[:200]}..."
+            )
             self.partial_response += response_text
             return False
             
         except ResponseProcessingError as e:
-            logger.error(f"응답 처리 오류: {str(e)}")
+            log_error(e, {
+                'response_text': response_text,
+                'partial_response': self.partial_response
+            })
             self._show_error_message(str(e))
             self.partial_response = ""
             return True
             
         except Exception as e:
-            logger.exception("예기치 않은 오류가 발생했습니다.")
+            log_error(e, {
+                'response_text': response_text,
+                'partial_response': self.partial_response,
+                'response_json': locals().get('response_json')
+            })
             self._show_error_message(f"응답 처리 중 오류가 발생했습니다: {str(e)}")
             self.partial_response = ""
             return True
@@ -1105,26 +1170,46 @@ Model settings changed:
     def get_card_content(self):
         """현재 카드의 내용을 가져옵니다."""
         try:
+            logger.debug("카드 콘텐츠 조회 시작")
+            
             if not mw.reviewer or not mw.reviewer.card:
+                logger.error("현재 리뷰 중인 카드가 없음")
                 raise CardContentError("현재 리뷰 중인 카드가 없습니다.")
 
             card = mw.reviewer.card
             note = card.note()
             card_ord = card.ord
+            
+            logger.debug(
+                f"카드 정보:\n"
+                f"Card ID: {card.id}\n"
+                f"Note ID: {note.id}\n"
+                f"Card Type: {note.model()['name']}\n"
+                f"Card Ordinal: {card_ord}"
+            )
 
             # 카드 타입에 따른 처리
             if note.model()['name'] == "Cloze":
+                logger.debug("Cloze 카드 처리 시작")
                 return self._process_cloze_card(note, card_ord)
             else:
+                logger.debug("기본 카드 처리 시작")
                 return self._process_basic_card(card)
 
         except CardContentError as e:
-            logger.error(f"카드 콘텐츠 오류: {str(e)}")
+            log_error(e, {
+                'card_id': getattr(mw.reviewer.card, 'id', None),
+                'note_type': getattr(note, 'model', lambda: {})().get('name') if 'note' in locals() else None
+            })
             self._show_error_message(str(e))
             return None, None, None
             
         except Exception as e:
-            logger.exception("카드 콘텐츠 처리 중 예기치 않은 오류가 발생했습니다.")
+            log_error(e, {
+                'card_id': getattr(mw.reviewer.card, 'id', None),
+                'note_type': getattr(note, 'model', lambda: {})().get('name') if 'note' in locals() else None,
+                'card_ord': locals().get('card_ord')
+            })
             self._show_error_message(f"카드 콘텐츠 처리 중 오류가 발생했습니다: {str(e)}")
             return None, None, None
 
@@ -1255,12 +1340,16 @@ Model settings changed:
     def _show_error_message(self, message):
         """에러 메시지를 UI에 표시"""
         try:
+            logger.debug(f"에러 메시지 표시 시작: {message}")
+            
             if isinstance(message, (BridgeError, LLMProviderError)):
                 error_message = str(message)
                 help_text = message.help_text
+                logger.debug(f"예외 타입: {type(message).__name__}, 도움말: {help_text}")
             else:
                 error_message = str(message)
                 help_text = "나중에 다시 시도해 주세요."
+                logger.debug("일반 에러 메시지 처리")
 
             error_html = f"""
             <div class="system-message-container error">
@@ -1274,8 +1363,10 @@ Model settings changed:
             
             if answer_checker_window and answer_checker_window.web_view:
                 answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
+                logger.info("에러 메시지 UI 업데이트 완료")
                 
         except Exception as e:
+            log_error(e, {'original_message': message})
             logger.error(f"에러 메시지 표시 중 오류 발생: {str(e)}")
             # 기본 에러 메시지 표시
             basic_error_html = f"""
@@ -1288,6 +1379,7 @@ Model settings changed:
             """
             if answer_checker_window and answer_checker_window.web_view:
                 answer_checker_window.web_view.setHtml(answer_checker_window.default_html + basic_error_html)
+                logger.info("기본 에러 메시지 UI 업데이트 완료")
 
 logger.info("Bridge initialized")
 
