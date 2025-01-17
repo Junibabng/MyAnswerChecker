@@ -60,6 +60,47 @@ DIFFICULTY_HARD = "Hard"
 DIFFICULTY_GOOD = "Good"
 DIFFICULTY_EASY = "Easy"
 
+class BridgeError(Exception):
+    """Bridge 관련 기본 예외 클래스"""
+    def __init__(self, message, help_text=None):
+        super().__init__(message)
+        self.help_text = help_text or "나중에 다시 시도해 주세요."
+
+class CardContentError(BridgeError):
+    """카드 콘텐츠 처리 관련 예외"""
+    def __init__(self, message):
+        help_texts = {
+            "no_card": "다른 카드로 이동한 후 다시 시도해 주세요.",
+            "empty": "카드 내용을 확인하고 필요한 내용을 추가해 주세요.",
+            "no_field": "카드 템플릿을 확인하고 필요한 필드를 추가해 주세요."
+        }
+        
+        if "현재 리뷰 중인 카드가 없습니다" in message:
+            help_text = help_texts["no_card"]
+        elif "비어있습니다" in message:
+            help_text = help_texts["empty"]
+        elif "필드가 없습니다" in message:
+            help_text = help_texts["no_field"]
+        else:
+            help_text = "카드 내용을 확인하고 다시 시도해 주세요."
+            
+        super().__init__(message, help_text)
+
+class ResponseProcessingError(BridgeError):
+    """응답 처리 관련 예외"""
+    def __init__(self, message):
+        help_texts = {
+            "json": "잠시 후 다시 시도해 주세요.",
+            "fields": "다시 한 번 시도해 주세요. 문제가 계속되면 설정에서 다른 AI 모델을 선택해보세요."
+        }
+        
+        if "JSON" in message:
+            help_text = help_texts["json"]
+        else:
+            help_text = help_texts["fields"]
+            
+        super().__init__(message, help_text)
+
 class Bridge(QObject):
     # Constants
     RESPONSE_TIMEOUT = 10  # seconds
@@ -72,14 +113,14 @@ class Bridge(QObject):
     sendEditAdviceResponse = pyqtSignal(str)
     timer_signal = pyqtSignal(str)
     stream_data_received = pyqtSignal(str, str, str)
-    model_info_changed = pyqtSignal()  # New signal for model info updates
+    model_info_changed = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._initialize_attributes()
         self._setup_timer()
         self.update_llm_provider()
-        self.partial_response = ""  # JSON 버퍼 추가
+        self.partial_response = ""
 
     def _initialize_attributes(self):
         """Initialize all instance attributes"""
@@ -111,7 +152,19 @@ class Bridge(QObject):
     def _handle_response_timeout(self, request_id, data_type="response"):
         """Handle timeout for responses"""
         logger.error(f"Response timeout for {data_type} request {request_id}")
-        error_html = "<p>Response time exceeded. Please try again.</p>"
+        error_message = "응답 시간이 초과되었습니다."
+        help_text = "인터넷 연결을 확인하고 다시 시도해 주세요."
+        
+        error_html = f"""
+        <div class="system-message-container error">
+            <div class="system-message">
+                <p class="error-message" style="color: #e74c3c; margin-bottom: 8px;">{error_message}</p>
+                <p class="help-text" style="color: #666; font-size: 0.9em;">{help_text}</p>
+            </div>
+            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+        </div>
+        """
+        
         if answer_checker_window:
             answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
         self._clear_request_data(request_id)
@@ -128,64 +181,36 @@ class Bridge(QObject):
         try:
             complete_json = self.partial_response + response_text
             response_json = json.loads(complete_json)
-            self.partial_response = ""  # 성공적으로 로드되면 버퍼 초기화
+            self.partial_response = ""
+            
+            if not isinstance(response_json, dict):
+                raise ResponseProcessingError("응답이 올바른 JSON 객체가 아닙니다.")
+                
+            required_fields = ["evaluation", "recommendation", "answer"]
+            missing_fields = [field for field in required_fields if field not in response_json]
+            if missing_fields:
+                raise ResponseProcessingError(f"응답에 필수 필드가 누락되었습니다: {', '.join(missing_fields)}")
+            
             html_content = self._generate_response_html(response_json)
             if answer_checker_window:
                 answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
             return True
+            
         except json.JSONDecodeError:
-            # JSON이 완전하지 않은 경우
+            logger.warning("불완전한 JSON 응답을 받았습니다. 버퍼링 중...")
             self.partial_response += response_text
-            
-            # 일정 시간(10초) 이상 응답이 완성되지 않으면 현재까지의 응답을 출력
-            if len(self.partial_response) > 0:
-                try:
-                    # 마지막 완성된 JSON 찾기
-                    json_pattern = r'\{[^}]+\}'
-                    matches = list(re.finditer(json_pattern, self.partial_response))
-                    if matches:
-                        last_json = matches[-1].group(0)
-                        try:
-                            response_json = json.loads(last_json)
-                            html_content = self._generate_response_html(response_json)
-                            if answer_checker_window:
-                                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
-                            self.partial_response = ""  # 버퍼 초기화
-                            return True
-                        except:
-                            pass
-                    
-                    # JSON 파싱 실패시 텍스트 그대로 출력
-                    if answer_checker_window:
-                        html_content = f"""
-                        <div class="system-message-container">
-                            <div class="system-message">
-                                <p>{self.markdown_to_html(self.partial_response)}</p>
-                            </div>
-                            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                        </div>
-                        """
-                        answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
-                        self.partial_response = ""  # 버퍼 초기화
-                        return True
-                except Exception as e:
-                    logger.error(f"Error processing partial response: {str(e)}")
-            
-            logger.warning("Incomplete JSON received, buffering...")
             return False
+            
+        except ResponseProcessingError as e:
+            logger.error(f"응답 처리 오류: {str(e)}")
+            self._show_error_message(str(e))
+            self.partial_response = ""
+            return True
+            
         except Exception as e:
-            logger.exception("예기치 않은 오류")
-            if answer_checker_window:
-                error_html = f"""
-                <div class="system-message-container">
-                    <div class="system-message">
-                        <p style='color: red;'>오류가 발생했습니다: {str(e)}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
-                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
-            self.partial_response = ""  # 버퍼 초기화
+            logger.exception("예기치 않은 오류가 발생했습니다.")
+            self._show_error_message(f"응답 처리 중 오류가 발생했습니다: {str(e)}")
+            self.partial_response = ""
             return True
 
     def _generate_response_html(self, response_json):
@@ -1078,52 +1103,73 @@ Model settings changed:
             return False
 
     def get_card_content(self):
-        """Returns the current card's content and answer."""
+        """현재 카드의 내용을 가져옵니다."""
         try:
-            card = mw.reviewer.card
-            if not card:
-                return None, None, None
+            if not mw.reviewer or not mw.reviewer.card:
+                raise CardContentError("현재 리뷰 중인 카드가 없습니다.")
 
+            card = mw.reviewer.card
             note = card.note()
             card_ord = card.ord
-            model = note.model()
-            model_type = model.get('type')
 
-            if model_type == 1:  # Cloze card
+            # 카드 타입에 따른 처리
+            if note.model()['name'] == "Cloze":
                 return self._process_cloze_card(note, card_ord)
-            else:  # Basic card
+            else:
                 return self._process_basic_card(card)
 
+        except CardContentError as e:
+            logger.error(f"카드 콘텐츠 오류: {str(e)}")
+            self._show_error_message(str(e))
+            return None, None, None
+            
         except Exception as e:
-            logger.exception("Failed to get card content: %s", e)
+            logger.exception("카드 콘텐츠 처리 중 예기치 않은 오류가 발생했습니다.")
+            self._show_error_message(f"카드 콘텐츠 처리 중 오류가 발생했습니다: {str(e)}")
             return None, None, None
 
     def _process_cloze_card(self, note, card_ord):
-        """Process cloze card content and extract answer"""
-        content = note.fields[0]
-        clean_content = BeautifulSoup(content, 'html.parser').get_text()
-        
-        current_cloze_number = card_ord + 1
-        # 현재 cloze 번호에 해당하는 패턴만 정확히 매칭
-        cloze_pattern = re.compile(r'\{\{c' + str(current_cloze_number) + r'::(.*?)(?:\|\|.*?)?\}\}')
-        matches = cloze_pattern.findall(content)
-        
-        if matches:
-            # 첫 번째 매치만 사용 (동일한 번호의 cloze가 여러 개 있을 경우)
-            card_answers = [matches[0].strip()]
-            logger.debug(f"Cloze card #{current_cloze_number} - Content: {clean_content}, Current Cloze Answer: {card_answers[0]}")
-        else:
-            card_answers = []
-            logger.debug(f"No answer found for cloze #{current_cloze_number}")
-        
-        return clean_content, card_answers, card_ord
+        """Cloze 카드 처리"""
+        try:
+            if 'Text' not in note:
+                raise CardContentError("Cloze 카드에 'Text' 필드가 없습니다.")
+
+            text = note['Text']
+            soup = BeautifulSoup(text, 'html.parser')
+            
+            # 불필요한 태그 제거
+            self._remove_tags(soup, ['script', 'style'])
+            self._remove_fsrs_status(soup)
+            
+            # 텍스트 추출
+            content = self._extract_all_text(soup)
+            if not content.strip():
+                raise CardContentError("카드 내용이 비어있습니다.")
+
+            return content, [], card_ord
+
+        except CardContentError:
+            raise
+        except Exception as e:
+            raise CardContentError(f"Cloze 카드 처리 중 오류가 발생했습니다: {str(e)}")
 
     def _process_basic_card(self, card):
-        """Process basic card content and extract answer"""
-        question = self._extract_question(card)
-        card_answers = self._extract_answer(card)
-        
-        return question, card_answers, None
+        """기본 카드 처리"""
+        try:
+            question = self._extract_question(card)
+            answers = self._extract_answer(card)
+            
+            if not question.strip():
+                raise CardContentError("질문 내용이 비어있습니다.")
+            if not answers:
+                raise CardContentError("답변 내용이 비어있습니다.")
+
+            return question, answers, card.ord
+
+        except CardContentError:
+            raise
+        except Exception as e:
+            raise CardContentError(f"기본 카드 처리 중 오류가 발생했습니다: {str(e)}")
 
     def _extract_question(self, card):
         """Extract question from basic card"""
@@ -1205,6 +1251,43 @@ Model settings changed:
         self.last_response = None
         self.last_user_answer = None
         self.last_elapsed_time = None
+
+    def _show_error_message(self, message):
+        """에러 메시지를 UI에 표시"""
+        try:
+            if isinstance(message, (BridgeError, LLMProviderError)):
+                error_message = str(message)
+                help_text = message.help_text
+            else:
+                error_message = str(message)
+                help_text = "나중에 다시 시도해 주세요."
+
+            error_html = f"""
+            <div class="system-message-container error">
+                <div class="system-message">
+                    <p class="error-message" style="color: #e74c3c; margin-bottom: 8px;">{error_message}</p>
+                    <p class="help-text" style="color: #666; font-size: 0.9em;">{help_text}</p>
+                </div>
+                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+            </div>
+            """
+            
+            if answer_checker_window and answer_checker_window.web_view:
+                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
+                
+        except Exception as e:
+            logger.error(f"에러 메시지 표시 중 오류 발생: {str(e)}")
+            # 기본 에러 메시지 표시
+            basic_error_html = f"""
+            <div class="system-message-container error">
+                <div class="system-message">
+                    <p style="color: #e74c3c;">오류가 발생했습니다. 나중에 다시 시도해 주세요.</p>
+                </div>
+                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+            </div>
+            """
+            if answer_checker_window and answer_checker_window.web_view:
+                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + basic_error_html)
 
 logger.info("Bridge initialized")
 
