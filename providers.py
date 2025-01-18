@@ -5,8 +5,52 @@ import time
 import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime
+import random
 
+# Logging setup
+addon_dir = os.path.dirname(os.path.abspath(__file__))
+log_file_path = os.path.join(addon_dir, 'MyAnswerChecker_debug.log')
+os.makedirs(addon_dir, exist_ok=True)
+
+# Create a logger
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Create a file handler
+file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+file_handler.setLevel(logging.DEBUG)
+
+# Create formatters
+debug_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s\n'
+    'File: %(filename)s:%(lineno)d\n'
+    'Function: %(funcName)s\n'
+    'Message: %(message)s\n'
+)
+
+error_formatter = logging.Formatter(
+    '\n=== Error Log ===\n'
+    '%(asctime)s - %(name)s - %(levelname)s\n'
+    'File: %(filename)s:%(lineno)d\n'
+    'Function: %(funcName)s\n'
+    'Message: %(message)s\n'
+    'Stack Trace:\n%(stack_trace)s\n'
+    '================\n'
+)
+
+class ErrorLogFilter(logging.Filter):
+    """에러 로그에 스택 트레이스를 추가하는 필터"""
+    def filter(self, record):
+        if record.levelno >= logging.ERROR:
+            record.stack_trace = traceback.format_stack()
+        return True
+
+# Add formatter and filter to handler
+file_handler.setFormatter(debug_formatter)
+file_handler.addFilter(ErrorLogFilter())
+
+# Add the handler to the logger
+logger.addHandler(file_handler)
 
 def log_error(e, context=None):
     """상세한 에러 로깅을 위한 유틸리티 함수"""
@@ -342,22 +386,52 @@ class OpenAIProvider(LLMProvider):
             raise APIConnectionError("예기치 않은 오류가 발생했습니다.")
 
 class GeminiProvider(LLMProvider):
-    """Google Gemini API를 사용하는 LLM 프로바이더"""
+    """Gemini API를 사용하는 LLM 프로바이더"""
     def __init__(self, api_key, model_name="gemini-2.0-flash-exp"):
         super().__init__()
         if not api_key:
             logger.error("API 키가 제공되지 않음")
-            raise InvalidAPIKeyError("API 키가 제공되지 않았습니다.")
+            raise InvalidAPIKeyError("API 키가 필요합니다.")
+            
+        # API 키 리스트 생성 및 초기화
+        self.api_keys = [key.strip() for key in api_key.split(',') if key.strip()]
+        if not self.api_keys:
+            raise InvalidAPIKeyError("유효한 API 키가 없습니다.")
+            
+        # 사용할 API 키 순서 초기화
+        self.api_key_queue = []
+        self._refresh_api_key_queue()
             
         logger.info(
             f"Gemini 프로바이더 초기화:\n"
-            f"Model: {model_name}"
+            f"Model: {model_name}\n"
+            f"API Keys Count: {len(self.api_keys)}"
         )
             
-        self.api_key = api_key
         self.model_name = model_name
-        self.base_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}"
-        self.system_prompt = "You are a helpful assistant."
+        self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
+        self.system_prompt = None
+
+    def _refresh_api_key_queue(self):
+        """API 키 큐를 새로 생성하고 무작위로 섞습니다."""
+        self.api_key_queue = self.api_keys.copy()
+        random.shuffle(self.api_key_queue)
+        # 각 API 키의 마지막 4자리 로깅
+        key_list = [f"...{key[-4:]}" if len(key) > 4 else "****" for key in self.api_key_queue]
+        logger.info(f"=== API 키 큐 새로 생성됨 (총 {len(self.api_key_queue)}개) ===")
+        logger.info(f"새로운 API 키 순서: {', '.join(key_list)}")
+
+    def _get_next_api_key(self):
+        """다음 사용할 API 키를 가져옵니다."""
+        if not self.api_key_queue:
+            self._refresh_api_key_queue()
+        api_key = self.api_key_queue.pop()
+        # API 키의 마지막 4자리만 로깅
+        masked_key = f"...{api_key[-4:]}" if len(api_key) > 4 else "****"
+        logger.info(f"=== API 키 사용 ===")
+        logger.info(f"Current API Key: {masked_key}")
+        logger.info(f"남은 키: {len(self.api_key_queue)}개")
+        return api_key
 
     def set_system_prompt(self, prompt):
         logger.debug(f"시스템 프롬프트 설정: {prompt}")
@@ -366,32 +440,26 @@ class GeminiProvider(LLMProvider):
     def call_api(self, system_message, user_message, temperature=0.2):
         """LLM API를 호출하여 응답을 받아옵니다."""
         try:
-            logger.debug(
-                "API 호출 준비:\n"
-                f"System Message: {system_message}\n"
-                f"Temperature: {temperature}"
-            )
+            logger.info("=== API 호출 시작 ===")
+            messages = [{"role": "user", "content": user_message}]
             
-            messages = [
-                {"role": "user", "content": user_message}
-            ]
+            # API 키 선택 및 응답 생성
+            current_api_key = self._get_next_api_key()
+            response = self.generate_response(messages, temperature, current_api_key)
             
-            return self._retry_with_exponential_backoff(
-                self.generate_response,
-                messages,
-                temperature
-            )
+            logger.info("=== API 호출 완료 ===")
+            return response
             
         except Exception as e:
-            log_error(e, {
-                'system_message': system_message,
-                'temperature': temperature
-            })
+            logger.error(f"=== API 호출 실패 ===\n{str(e)}")
             raise
 
-    def generate_response(self, messages, temperature=0.7):
+    def generate_response(self, messages, temperature=0.7, api_key=None):
         try:
-            url = f"{self.base_url}:generateContent?key={self.api_key}"
+            if api_key is None:
+                api_key = self._get_next_api_key()
+                
+            url = f"{self.base_url}/{self.model_name}:generateContent?key={api_key}"
             
             headers = {
                 "Content-Type": "application/json"
