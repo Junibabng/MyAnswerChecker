@@ -148,6 +148,11 @@ class ResponseProcessingError(BridgeError):
             
         super().__init__(message, help_text)
 
+class LLMProviderError(BridgeError):
+    """LLM 제공자 관련 에러"""
+    def __init__(self, message):
+        super().__init__(message, "LLM 서비스 설정을 확인해주세요.")
+
 class Bridge(QObject):
     # Constants
     RESPONSE_TIMEOUT = 10  # seconds
@@ -1226,12 +1231,21 @@ Model settings changed:
             self._remove_tags(soup, ['script', 'style'])
             self._remove_fsrs_status(soup)
             
-            # 텍스트 추출
-            content = self._extract_all_text(soup)
-            if not content.strip():
+            # 현재 카드의 cloze 번호에 해당하는 정답 추출
+            cloze_pattern = re.compile(r'{{c' + str(card_ord + 1) + r'::(.*?)}}')
+            matches = cloze_pattern.findall(text)
+            if not matches:
+                raise CardContentError(f"Cloze {card_ord + 1} 빈칸을 찾을 수 없습니다.")
+            
+            # 전체 내용은 그대로 유지
+            content = soup.get_text(separator=' ', strip=True)
+            if not content:
                 raise CardContentError("카드 내용이 비어있습니다.")
 
-            return content, [], card_ord
+            # 현재 cloze의 정답만 반환
+            answers = [match.strip() for match in matches]
+            
+            return content, answers, card_ord
 
         except CardContentError:
             raise
