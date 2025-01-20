@@ -25,7 +25,7 @@ class AnswerCheckerWindow(QDialog):
         super().__init__(parent)
         self.bridge = bridge
         self.setWindowTitle("MyAnswerChecker")
-        self.setGeometry(300, 300, 600, 400)
+        self.setGeometry(300, 300, 800, 600)
         self.layout = QVBoxLayout(self)
         self.last_response = None
         self.is_webview_initialized = False
