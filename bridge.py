@@ -25,6 +25,7 @@ from aqt.gui_hooks import (
 )
 from .providers import LLMProvider, OpenAIProvider, GeminiProvider
 import traceback
+from .message import MessageType, Message
 
 # Logging setup
 import logging
@@ -270,16 +271,6 @@ class Bridge(QObject):
                 'partial_response': self.partial_response
             })
             self._show_error_message(str(e))
-            self.partial_response = ""
-            return True
-            
-        except Exception as e:
-            log_error(e, {
-                'response_text': response_text,
-                'partial_response': self.partial_response,
-                'response_json': locals().get('response_json')
-            })
-            self._show_error_message(f"응답 처리 중 오류가 발생했습니다: {str(e)}")
             self.partial_response = ""
             return True
 
@@ -1365,35 +1356,25 @@ Model settings changed:
                 help_text = "나중에 다시 시도해 주세요."
                 logger.debug("일반 에러 메시지 처리")
 
-            error_html = f"""
-            <div class="system-message-container error">
-                <div class="system-message">
-                    <p class="error-message" style="color: #e74c3c; margin-bottom: 8px;">{error_message}</p>
-                    <p class="help-text" style="color: #666; font-size: 0.9em;">{help_text}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            
-            if answer_checker_window and answer_checker_window.web_view:
-                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
+            if answer_checker_window:
+                answer_checker_window.show_error_message(error_message, help_text)
                 logger.info("에러 메시지 UI 업데이트 완료")
                 
         except Exception as e:
             log_error(e, {'original_message': message})
             logger.error(f"에러 메시지 표시 중 오류 발생: {str(e)}")
-            # 기본 에러 메시지 표시
-            basic_error_html = f"""
-            <div class="system-message-container error">
-                <div class="system-message">
-                    <p style="color: #e74c3c;">오류가 발생했습니다. 나중에 다시 시도해 주세요.</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            if answer_checker_window and answer_checker_window.web_view:
-                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + basic_error_html)
+            if answer_checker_window:
+                answer_checker_window.show_error_message(
+                    "오류가 발생했습니다. 나중에 다시 시도해 주세요."
+                )
                 logger.info("기본 에러 메시지 UI 업데이트 완료")
+
+    def handle_response_error(self, error_message, error_detail):
+        """Handles errors during response processing"""
+        logger.error(f"{error_message}: {error_detail}")
+        if answer_checker_window:
+            answer_checker_window.show_error_message(error_message)
+        QTimer.singleShot(0, lambda: showInfo(error_message))
 
 logger.info("Bridge initialized")
 

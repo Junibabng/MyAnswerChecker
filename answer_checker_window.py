@@ -17,6 +17,8 @@ import time
 import logging
 import threading
 import uuid  # UUID 추가
+from .message import MessageManager, Message, MessageType
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +47,7 @@ class AnswerCheckerWindow(QDialog):
         self.input_label = QLabel("Enter your answer:")
         self.input_field = QLineEdit()
         self.send_button = QPushButton("Send")
-
-        self.joke_button = QPushButton("Joke 😆")
-        self.edit_advice_button = QPushButton("Card Edit ✏️")
+        self.send_button.clicked.connect(self.send_answer)
         
         self.timer_label = QLabel("Elapsed time: 0 seconds") 
         self.layout.addWidget(self.timer_label)
@@ -59,34 +59,15 @@ class AnswerCheckerWindow(QDialog):
 
         self.layout.addWidget(self.scroll_area)
 
+        # 버튼 레이아웃
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(self.send_button)
+        
+        # 입력 필드와 버튼을 포함하는 레이아웃
         input_layout = QHBoxLayout()
         input_layout.addWidget(self.input_field)
-        input_layout.addWidget(self.send_button)
+        input_layout.addLayout(button_layout)
         self.layout.addLayout(input_layout)
-
-        buttons_layout = QHBoxLayout()
-        buttons_layout.addWidget(self.joke_button)
-        buttons_layout.addWidget(self.edit_advice_button)
-        self.layout.addLayout(buttons_layout)
-
-        button_style = """
-            QPushButton {
-                border-radius: 15px;
-                padding: 5px;
-                background-color: #333;
-                border: 1px solid #555;
-                color: #fff;
-            }
-            QPushButton:hover {
-                background-color: #444;
-            }
-        """
-        self.joke_button.setStyleSheet(button_style)
-        self.edit_advice_button.setStyleSheet(button_style)
-
-        self.send_button.clicked.connect(self.send_answer)
-        self.joke_button.clicked.connect(self.show_joke)
-        self.edit_advice_button.clicked.connect(self.show_edit_advice)
 
         self.bridge.sendResponse.connect(self.display_response)
         self.bridge.sendQuestionResponse.connect(self.display_question_response)
@@ -337,6 +318,7 @@ class AnswerCheckerWindow(QDialog):
 
         self.is_initial_answer = True
         self.is_processing = False
+        self.message_manager = MessageManager()
 
     def initialize_webview(self):
         """WebView 초기화 및 설정"""
@@ -368,10 +350,10 @@ class AnswerCheckerWindow(QDialog):
                 if not self.is_webview_initialized and not self.is_webview_loading:
                     logger.debug("WebView not initialized, starting initialization")
                     self.initialize_webview()
-                    return False
+                    return self.wait_for_webview_ready()
                 elif self.is_webview_loading:
                     logger.debug("WebView is currently loading")
-                    return False
+                    return self.wait_for_webview_ready()
                 return True
         except Exception as e:
             logger.error(f"WebView 상태 확인 중 오류: {str(e)}")
@@ -388,15 +370,9 @@ class AnswerCheckerWindow(QDialog):
                 logger.info("WebView 초기화 완료")
                 
                 # 웰컴 메시지 표시
-                welcome_message = f"""
-                <div class="system-message-container">
-                    <div class="system-message">
-                        <p>카드 리뷰를 진행해주세요.</p>
-                        <p class="sub-text">답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요.</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
+                welcome_message = self.message_manager.create_system_message(
+                    "카드 리뷰를 진행해주세요.\n답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요."
+                )
                 self.append_to_chat(welcome_message)
                 
                 # 저장된 메시지 처리
@@ -408,12 +384,12 @@ class AnswerCheckerWindow(QDialog):
                 logger.error("WebView 로드 실패")
                 self.is_webview_loading = False
                 self.initialization_event.clear()
-                self._show_error_message("WebView 초기화에 실패했습니다.")
+                self.show_error_message("WebView 초기화에 실패했습니다.")
         except Exception as e:
             logger.error(f"WebView 로드 완료 처리 중 오류: {str(e)}")
             self.is_webview_loading = False
             self.initialization_event.clear()
-            self._show_error_message(f"WebView 초기화 중 오류가 발생했습니다: {str(e)}")
+            self.show_error_message(f"WebView 초기화 중 오류가 발생했습니다: {str(e)}")
 
     def _is_webview_ready(self):
         """WebView가 사용 가능한 상태인지 확인"""
@@ -423,35 +399,30 @@ class AnswerCheckerWindow(QDialog):
         """WebView 초기화 완료를 기다림"""
         return self.initialization_event.wait(timeout)
 
-    def append_to_chat(self, html_content):
-        """채팅 메시지 추가"""
-        if not self._is_webview_ready():
-            if not self.wait_for_webview_ready():
-                logger.error("WebView 초기화 대기 시간 초과")
-                self._show_error_message("WebView 초기화 대기 시간이 초과되었습니다.")
-                return False
+    def append_to_chat(self, message: Message):
+        """채팅창에 메시지를 추가합니다."""
+        if not self._check_webview_state():
+            return
+            
+        html_content = message.to_html()
+        script = """
+        (function() {
+            var chatContainer = document.querySelector('.chat-container');
+            if (chatContainer) {
+                var div = document.createElement('div');
+                div.innerHTML = `%s`;
+                chatContainer.appendChild(div);
+                window.scrollTo(0, document.body.scrollHeight);
+                return true;
+            }
+            return false;
+        })();
+        """ % html_content
         
-        try:
-            js_code = f'''
-                (function() {{
-                    const chatContainer = document.querySelector('.chat-container');
-                    if (chatContainer) {{
-                        chatContainer.insertAdjacentHTML('beforeend', {json.dumps(html_content)});
-                        chatContainer.scrollTop = chatContainer.scrollHeight;
-                        return true;
-                    }}
-                    return false;
-                }})()
-            '''
-            self.web_view.page().runJavaScript(
-                js_code,
-                lambda success: logger.debug(f"메시지 추가 {'성공' if success else '실패'}")
-            )
-            return True
-        except Exception as e:
-            logger.error(f"채팅 메시지 추가 중 오류: {str(e)}")
-            self._show_error_message(f"메시지 추가 중 오류가 발생했습니다: {str(e)}")
-            return False
+        self.web_view.page().runJavaScript(
+            script,
+            lambda result: logger.debug(f"Message append result: {'Success' if result else 'Failed'}")
+        )
 
     def _process_saved_messages(self):
         """저장된 메시지들을 처리합니다."""
@@ -460,23 +431,18 @@ class AnswerCheckerWindow(QDialog):
 
         logger.debug(f"Processing {len(self._saved_messages)} saved messages")
         
-        for message in self._saved_messages:
-            if isinstance(message, dict):
-                # 타입별 메시지 처리
-                msg_type = message.get("type")
-                content = message.get("content")
+        for message_data in self._saved_messages:
+            if isinstance(message_data, dict):
+                msg_type = message_data.get("type")
+                content = message_data.get("content")
                 
                 if msg_type == "response":
                     self.display_response(content)
                 elif msg_type == "question":
                     self.display_question_response(content)
-                elif msg_type == "joke":
-                    self.display_joke(content)
-                elif msg_type == "edit_advice":
-                    self.display_edit_advice(content)
-            else:
-                # 일반 HTML 메시지
-                self.append_to_chat(message)
+            elif isinstance(message_data, Message):
+                # Message 객체는 직접 표시
+                self.append_to_chat(message_data)
         
         # 처리 완료된 메시지 초기화
         self._saved_messages = []
@@ -503,26 +469,36 @@ Card ID: {card.id}
 Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
             
-            # 카드 내용 가져오기
-            card_content, _, _ = self.bridge.get_card_content()
-            if card_content:
-                question_html = f"""
-                <div class="system-message-container">
-                    <div class="model-info">현재 문제</div>
-                    <div class="system-message">
-                        <p>{self.markdown_to_html(card_content)}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
-                self.clear_chat()
-                self.append_to_chat(question_html)
-            
-            if not self.last_difficulty_message:
-                logger.debug("No difficulty message, showing review message")
-                QTimer.singleShot(100, self.show_review_message)
-            else:
-                logger.debug("Difficulty message exists, skipping review message")
+            try:
+                # 카드 내용 가져오기
+                card_content, _, _ = self.bridge.get_card_content()
+                if card_content:
+                    # Message 객체 생성
+                    question_message = self.message_manager.create_llm_message(
+                        content=self.markdown_to_html(card_content),
+                        model_name="현재 문제"
+                    )
+                    
+                    # WebView 상태 확인 및 초기화
+                    if not self._check_webview_state():
+                        logger.debug("WebView not ready, initializing...")
+                        self.initialize_webview()
+                        if not self.wait_for_webview_ready():
+                            logger.error("WebView initialization timeout")
+                            return
+                    
+                    self.clear_chat()
+                    self.append_to_chat(question_message)
+                    
+                    if not self.last_difficulty_message:
+                        logger.debug("No difficulty message, showing review message")
+                        QTimer.singleShot(100, self.show_review_message)
+                    else:
+                        logger.debug("Difficulty message exists, skipping review message")
+                        
+            except Exception as e:
+                logger.exception("Error in on_show_question: %s", e)
+                self.show_error_message(f"문제 표시 중 오류가 발생했습니다: {str(e)}")
 
     def on_show_answer(self, card):
         """Called when an answer is shown."""
@@ -567,22 +543,13 @@ Has last_response: {bool(self.last_response)}
 Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
         if show:
-            loading_animation_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <div class="loading-indicator">
-                        <div class="loading-dots">
-                            <span></span><span></span><span></span>
-                        </div>
-                    </div>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            logger.debug("Adding loading animation to chat")
-            self.append_to_chat(loading_animation_html)
+            loading_message = self.message_manager.create_system_message(
+                '<div class="loading-indicator"><div class="loading-dots">'
+                '<span></span><span></span><span></span></div></div>'
+            )
+            self.append_to_chat(loading_message)
         else:
-            logger.debug("Attempting to remove loading animation")
+            # 로딩 애니메이션 제거 스크립트
             script = """
             (function() {
                 var loadingIndicators = document.querySelectorAll('.loading-indicator');
@@ -619,15 +586,10 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
     def handle_response_error(self, error_message, error_detail):
         """Handles errors during response processing."""
         logger.error(f"{error_message}: {error_detail}")
-        error_html = f"""
-        <div class="system-message-container">
-            <div class="system-message">
-                <p style='color: red;'>{error_message}</p>
-            </div>
-            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-        </div>
-        """
-        self.append_to_chat(error_html)
+        error_msg = self.message_manager.create_error_message(
+            f"{error_message}: {error_detail}"
+        )
+        self.append_to_chat(error_msg)
         QTimer.singleShot(0, lambda: showInfo(error_message))
 
     def _preprocess_json_string(self, json_str):
@@ -684,25 +646,21 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             else:  # gemini
                 model_name = settings.value("geminiModel", "Unknown Model")
             
-            recommendation_class = self.get_recommendation_class(recommendation)
-            html_content = f"""
-            <div class="system-message-container">
-                <div class="model-info">{model_name}</div>
-                <div class="system-message">
-                    <h2>평가 결과</h2>
-                    <div class="evaluation">{evaluation}</div>
-                    <div class="recommendation {recommendation_class}">{recommendation}</div>
-                    <div class="answer"><p style="white-space: pre-wrap;">{answer}</p></div>
-                    <div class="reference"><p>{reference}</p></div>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(html_content)
+            # Message 객체 생성
+            response_message = self.message_manager.create_llm_message(
+                content=f"""
+                <h2>평가 결과</h2>
+                <div class="evaluation">{evaluation}</div>
+                <div class="recommendation {self.get_recommendation_class(recommendation)}">{recommendation}</div>
+                <div class="answer"><p style="white-space: pre-wrap;">{answer}</p></div>
+                <div class="reference"><p>{reference}</p></div>
+                """,
+                model_name=model_name
+            )
+            self.append_to_chat(response_message)
+            
         except Exception as e:
             self.handle_response_error("JSON 파싱 오류", str(e))
-        except Exception as e:
-            self.handle_response_error("예기치 않은 오류", str(e))
 
     def display_question_response(self, response_json):
         """Displays the response to an additional question."""
@@ -728,7 +686,8 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                     raise
 
             if "error" in response:
-                answer_html = self.get_error_html(response['error'])
+                error_message = self.message_manager.create_error_message(response['error'])
+                self.append_to_chat(error_message)
             else:
                 # 현재 모델 정보 가져오기
                 settings = QSettings("LLM_response_evaluator", "Settings")
@@ -739,147 +698,37 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                     model_name = settings.value("geminiModel", "Unknown Model")
                 
                 recommendation = response.get("recommendation", "")
-                recommendation_class = self.get_recommendation_class(recommendation)
                 answer = response.get("answer", "답변 없음")
-                answer_html = f"""
-                <div class="system-message-container">
-                    <div class="model-info">{model_name}</div>
-                    <div class="system-message">
-                        <h3>추가 답변</h3>
-                        <span class="{recommendation_class}">{recommendation}</span>
-                        <p>{self.markdown_to_html(answer)}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
-            self.append_to_chat(answer_html)
+                
+                # Message 객체 생성
+                answer_message = self.message_manager.create_llm_message(
+                    content=f"""
+                    <h3>추가 답변</h3>
+                    <span class="{self.get_recommendation_class(recommendation)}">{recommendation}</span>
+                    <p>{self.markdown_to_html(answer)}</p>
+                    """,
+                    model_name=model_name
+                )
+                self.append_to_chat(answer_message)
+                
         except Exception as e:
             self.handle_response_error("추가 질문 처리 중 오류", str(e))
 
-    def display_joke(self, response_json):
-        """Displays the joke in the webview."""
-        if not self._check_webview_state():
-            logger.debug("Queuing joke for later display")
-            self._saved_messages.append({"type": "joke", "content": response_json})
-            return
+    def display_joke(self):
+        """Requests and displays a joke."""
+        pass
 
-        self.display_loading_animation(False)
-        try:
-            processed_json = self._preprocess_json_string(response_json)
-            
-            try:
-                response = json.loads(processed_json)
-            except json.JSONDecodeError:
-                # JSON 파싱 실패 시 정규식으로 JSON 부분 추출 시도
-                import re
-                json_pattern = r'\{[^}]+\}'
-                match = re.search(json_pattern, processed_json)
-                if match:
-                    response = json.loads(match.group(0))
-                else:
-                    raise
+    def display_edit_advice(self):
+        """Requests and displays card edit advice."""
+        pass
 
-            if "error" in response:
-                joke_html = self.get_error_html(response['error'])
-            else:
-                # 현재 모델 정보 가져오기
-                settings = QSettings("LLM_response_evaluator", "Settings")
-                provider_type = settings.value("providerType", "openai").lower()
-                if provider_type == "openai":
-                    model_name = settings.value("modelName", "Unknown Model")
-                else:  # gemini
-                    model_name = settings.value("geminiModel", "Unknown Model")
-                
-                joke = response.get("joke", "농담 생성 실패")
-                joke_html = f"""
-                <div class="system-message-container">
-                    <div class="model-info">{model_name}</div>
-                    <div class="system-message">
-                        <h3>재미있는 농담 😆</h3>
-                        <p>{self.markdown_to_html(joke)}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
-            self.append_to_chat(joke_html)
-        except Exception as e:
-            logger.exception("Error displaying joke: %s", e)
-            error_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p style='color: red;'>농담 표시 중 오류가 발생했습니다.</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(error_html)
+    def show_joke(self):
+        """Requests and displays a joke."""
+        pass
 
-    def display_edit_advice(self, response_json):
-        """Displays the card edit advice in the webview."""
-        if not self._check_webview_state():
-            logger.debug("Queuing edit advice for later display")
-            self._saved_messages.append({"type": "edit_advice", "content": response_json})
-            return
-
-        self.display_loading_animation(False)
-
-        try:
-            processed_json = self._preprocess_json_string(response_json)
-            
-            try:
-                response = json.loads(processed_json)
-            except json.JSONDecodeError:
-                # JSON 파싱 실패 시 정규식으로 JSON 부분 추출 시도
-                import re
-                json_pattern = r'\{[^}]+\}'
-                match = re.search(json_pattern, processed_json)
-                if match:
-                    response = json.loads(match.group(0))
-                else:
-                    raise
-
-            if "error" in response:
-                advice_html = f"""
-                <div class="system-message-container">
-                    <div class="system-message">
-                        <p style='color: red;'>오류: {response['error']}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
-            else:
-                # 현재 모델 정보 가져오기
-                settings = QSettings("LLM_response_evaluator", "Settings")
-                provider_type = settings.value("providerType", "openai").lower()
-                if provider_type == "openai":
-                    model_name = settings.value("modelName", "Unknown Model")
-                else:  # gemini
-                    model_name = settings.value("geminiModel", "Unknown Model")
-                
-                edit_advice = response.get("edit_advice", "조언을 생성할 수 없습니다.")
-                advice_html = f"""
-                <div class="system-message-container">
-                    <div class="model-info">{model_name}</div>
-                    <div class="system-message">
-                        <h3>카드 수정 조언 ✏️</h3>
-                        <p>{self.markdown_to_html(edit_advice)}</p>
-                    </div>
-                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-                </div>
-                """
-            self.append_to_chat(advice_html)
-
-        except Exception as e:
-            logger.exception("Error displaying card edit advice: %s", e)
-            error_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p style='color: red;'>카드 수정 조언 표시 중 오류가 발생했습니다: {str(e)}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(error_html)
+    def show_edit_advice(self):
+        """Requests and displays card edit advice."""
+        pass
 
     def markdown_to_html(self, text):
         """Converts Markdown-style emphasis and line breaks to HTML tags."""
@@ -892,23 +741,19 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
     def send_answer(self):
         """Submit and process user's answer"""
         if not self._check_webview_state():
-            self._show_error_message("답변 확인 창을 초기화 중입니다. 잠시만 기다려주세요...")
+            self.show_error_message("답변 확인 창을 초기화 중입니다. 잠시만 기다려주세요...")
             return
 
         user_answer = self.input_field.text().strip()
         if user_answer == "":
             return
 
-        # 사용자 메시지 표시
-        user_message_html = f"""
-        <div class="user-message-container">
-            <div class="user-message">
-                <p>{user_answer}</p>
-            </div>
-            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-        </div>
-        """
-        self.append_to_chat(user_message_html)
+        # 사용자 메시지를 Message 객체로 생성
+        user_message = Message(
+            content=user_answer,
+            message_type=MessageType.USER
+        )
+        self.append_to_chat(user_message)
 
         # AI 응답 로딩 애니메이션 표시
         self.display_loading_animation(True)
@@ -926,78 +771,6 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
         # Clear the input field after submitting the answer
         self.input_field.clear()
-
-    def show_joke(self):
-        """Requests and displays a joke."""
-        try:
-            # 사용자 메시지 표시
-            user_message_html = f"""
-            <div class="user-message-container">
-                <div class="user-message">
-                    <p>농담해봐</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(user_message_html)
-
-            # AI 응답 로딩 애니메이션 표시
-            self.display_loading_animation(True)
-
-            card_content, card_answers, card_ord = self.bridge.get_card_content()
-            if card_content and card_answers:
-                # 비동기로 처리
-                QTimer.singleShot(0, lambda: self.bridge.process_joke_request(card_content, card_answers))
-            else:
-                raise Exception("카드 정보를 가져올 수 없습니다.")
-        except Exception as e:
-            logger.exception("Error showing joke: %s", e)
-            self.display_loading_animation(False)
-            error_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p style='color: red;'>농담 생성 중 오류가 발생했습니다: {str(e)}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(error_html)
-
-    def show_edit_advice(self):
-        """Requests and displays card edit advice."""
-        try:
-            # 사용자 메시지 표시
-            user_message_html = f"""
-            <div class="user-message-container">
-                <div class="user-message">
-                    <p>카드 수정 관련 조언해주세요</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(user_message_html)
-
-            # AI 응답 로딩 애니메이션 표시
-            self.display_loading_animation(True)
-
-            card_content, card_answers, card_ord = self.bridge.get_card_content()
-            if card_content and card_answers:
-                # 비동기로 처리
-                QTimer.singleShot(0, lambda: self.bridge.process_edit_advice_request(card_content, card_answers))
-            else:
-                raise Exception("카드 정보를 가져올 수 없습니다.")
-        except Exception as e:
-            logger.exception("Error showing edit advice: %s", e)
-            self.display_loading_animation(False)
-            error_html = f"""
-            <div class="system-message-container">
-                <div class="system-message">
-                    <p style='color: red;'>카드 수정 조언 생성 중 오류가 발생했습니다: {str(e)}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(error_html)
 
     def handle_enter_key(self):
         """처리 빈 입력 필드에서 엔터키"""
@@ -1036,16 +809,12 @@ Current Card ID: {self.bridge.current_card_id}
 Chat History Length: {len(self.bridge.conversation_history['messages'])}
 """)
             
-            # Display user question
-            user_message_html = f"""
-            <div class="user-message-container">
-                <div class="user-message">
-                    <p>{question}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            self.append_to_chat(user_message_html)
+            # Display user question as Message object
+            user_message = Message(
+                content=question,
+                message_type=MessageType.USER
+            )
+            self.append_to_chat(user_message)
             
             # Show loading animation
             self.display_loading_animation(True)
@@ -1053,20 +822,13 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
             # Clear input field
             self.input_field.clear()
             
-            def get_card_info():
-                try:
-                    return self.bridge.get_card_content()
-                except Exception as e:
-                    logger.error(f"Error getting card content: {e}")
-                    return None, None, None
-
-            # Process in next event loop iteration
-            QTimer.singleShot(0, lambda: self._continue_question_processing(question, get_card_info()))
+            # Get card info in background
+            QTimer.singleShot(0, lambda: self._continue_question_processing(question, self.bridge.get_card_content()))
             
         except Exception as e:
             logger.exception("Error in process_additional_question: %s", e)
             self.display_loading_animation(False)
-            self._show_error_message("질문 처리 중 오류가 발생했습니다.")
+            self.show_error_message("질문 처리 중 오류가 발생했습니다.")
             self.is_processing = False
 
     def _continue_question_processing(self, question, card_info):
@@ -1087,7 +849,7 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
         except Exception as e:
             logger.exception("Error in _continue_question_processing: %s", e)
             self.display_loading_animation(False)
-            self._show_error_message(str(e))
+            self.show_error_message(str(e))
             self.is_processing = False
 
     def _process_question_thread(self, card_content, question, card_answers):
@@ -1118,15 +880,8 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
     @pyqtSlot(str)
     def _show_error_message(self, message):
         """Show error message in chat"""
-        error_html = f"""
-        <div class="system-message-container">
-            <div class="system-message">
-                <p style='color: red;'>{message}</p>
-            </div>
-            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-        </div>
-        """
-        self.append_to_chat(error_html)
+        error_message = self.message_manager.create_error_message(message)
+        self.append_to_chat(error_message)
 
     def follow_llm_suggestion(self):
         """LLM의 추천에 따라 난이도 버튼을 클릭하고 UI에 표시합니다."""
@@ -1164,14 +919,9 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             if mw.reviewer:
                 # 난이도 메시지 생성
                 current_time = datetime.now().strftime("%p %I:%M")
-                self.last_difficulty_message = f"""
-                <div class="system-message-container">
-                    <div class="system-message">
-                        <p>LLM의 추천에 따라 <span class="recommendation {self.get_recommendation_class(recommendation)}">{recommendation}</span> 난이도로 평가했습니다.</p>
-                    </div>
-                    <div class="message-time">{current_time}</div>
-                </div>
-                """
+                self.last_difficulty_message = self.message_manager.create_system_message(
+                    f"LLM의 추천에 따라 <span class='recommendation {self.get_recommendation_class(recommendation)}'>{recommendation}</span> 난이도로 평가했습니다."
+                )
                 logger.debug(f"""
 === Difficulty Message Set ===
 Recommendation: {recommendation}
@@ -1205,91 +955,33 @@ This will trigger on_user_answer_card
         # on_show_question에서 표시하도록 함
         pass
 
-    def append_to_chat(self, html_content):
-        """Appends content to the chat container and scrolls to the bottom."""
-        if not self._check_webview_state():
-            logger.debug("Queuing message for later display")
-            self._saved_messages.append(html_content)
-            return
+    def show_error_message(self, error_content: str, help_text: Optional[str] = None):
+        """에러 메시지를 표시합니다."""
+        message = self.message_manager.create_error_message(error_content, help_text)
+        self.append_to_chat(message)
 
-        logger.debug(f"""
-=== Append to Chat (Detailed) ===
-Content Type: {self._identify_message_type(html_content)}
-Content Preview: {html_content[:100]}...
-WebView Ready: {self._is_webview_ready()}
-Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
-""")
-        
-        # 메시지 저장
-        if self._identify_message_type(html_content) == "LLM Recommendation":
-            self._saved_messages = [html_content]  # 난이도 메시지만 저장
-        
-        script = f"""
-        (function() {{
-            var chatContainer = document.querySelector('.chat-container');
-            if (chatContainer) {{
-                var div = document.createElement('div');
-                div.innerHTML = `{html_content}`;
-                chatContainer.appendChild(div);
-                window.scrollTo(0, document.body.scrollHeight);
-                return true;
-            }}
-            return false;
-        }})();
-        """
-        self.web_view.page().runJavaScript(
-            script,
-            lambda result: logger.debug(f"Message append result: {'Success' if result else 'Failed'}")
-        )
+    def show_system_message(self, content: str):
+        """시스템 메시지를 표시합니다."""
+        message = self.message_manager.create_system_message(content)
+        self.append_to_chat(message)
 
-    def _is_webview_ready(self):
-        """WebView가 준비되었는지 확인합니다."""
-        return hasattr(self.web_view, 'page') and self.web_view.page() is not None
-
-    def _identify_message_type(self, html_content):
-        """메시지 타입을 식별합니다."""
-        if "LLM의 추천에 따라" in html_content:
-            return "LLM Recommendation"
-        elif "카드 리뷰를 진행해주세요" in html_content:
-            return "Review Prompt"
-        elif "user-message" in html_content:
-            return "User Message"
-        elif "system-message" in html_content:
-            return "System Message"
-        return "Unknown Message Type"
+    def show_llm_message(self, content: str, model_name: str):
+        """LLM 메시지를 표시합니다."""
+        message = self.message_manager.create_llm_message(content, model_name)
+        self.append_to_chat(message)
 
     def clear_chat(self):
         """채팅 내용을 모두 지우고 새로운 시작 메시지만 표시"""
         if not self._check_webview_state():
-            self._saved_messages = []  # 저장된 메시지도 모두 지우기
             return
-
-        caller_info = self._get_caller_info()
-        logger.debug(f"""
-=== Chat Clear Event ===
-Triggered by: {caller_info}
-Current State: {mw.state}
-Has last_response: {bool(self.last_response)}
-Has last_difficulty_message: {bool(self.last_difficulty_message)}
-Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
-""")
-        script = """
-        (function() {
-            var chatContainer = document.querySelector('.chat-container');
-            if (chatContainer) {
-                chatContainer.innerHTML = '';
-            }
-        })();
-        """
-        self.web_view.page().runJavaScript(script)
-
-    def _get_caller_info(self):
-        """호출 스택 정보를 가져옵니다."""
-        import traceback
-        stack = traceback.extract_stack()
-        # 현재 함수와 _get_caller_info를 제외한 호출자 정보 반환
-        caller = stack[-3]  # -3 인덱스가 실제 호출자
-        return f"{caller.filename.split('/')[-1]}:{caller.lineno} in {caller.name}"
+            
+        self.message_manager.clear_messages()
+        self.web_view.setHtml(self.default_html)
+        
+        if mw.state == "review":
+            self.show_review_message()
+        else:
+            self.show_default_message()
 
     def on_webview_loaded(self):
         """웹뷰 로드 완료 시 호출되는 핸들러"""
