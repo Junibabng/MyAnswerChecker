@@ -24,13 +24,15 @@ from aqt.gui_hooks import (
     reviewer_will_show_context_menu,
 )
 
+from .message import MessageManager, show_info
+from .providers import OpenAIProvider, GeminiProvider
+
 # Logging setup (Corrected)
 import logging
 import os
 from aqt import mw
 from aqt.qt import QSettings
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QGroupBox
-from .providers import OpenAIProvider, GeminiProvider
 
 # Setup logging
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -52,6 +54,7 @@ logger.info("Addon load start")
 # Global bridge object
 bridge = None
 answer_checker_window = None
+message_manager = MessageManager()
 
 # Constants for difficulty levels
 DIFFICULTY_AGAIN = "Again"
@@ -82,7 +85,7 @@ def setup_webchannel(bridge, web):
             logger.error("Could not find webview object or it does not support setWebChannel method.")
     except Exception as e:
         logger.exception("Error setting up QWebChannel: %s", e)
-        showInfo(f"Error setting up QWebChannel: ")
+        message_manager.handle_response_error("Error setting up QWebChannel", str(e))
 
 def add_menu():
     # "Tools" menu
@@ -410,11 +413,20 @@ def openSettingsDialog():
     dialog = SettingsDialog(mw)
     dialog.exec()
 
-# Function to handle JavaScript message from pycmd
 def on_js_message(handled, msg, context):
-    if msg == "open_settings":
-        openSettingsDialog()
-        return (True, None)
+    """JavaScript 메시지 처리"""
+    if not isinstance(msg, str):
+        return handled
+    try:
+        data = json.loads(msg)
+        if "type" in data and data["type"] == "error":
+            message_manager.handle_response_error(data.get("message", "Unknown error"))
+        elif "type" in data and data["type"] == "response":
+            message_manager.process_complete_response(data.get("text", ""), data.get("model", "Unknown Model"))
+    except json.JSONDecodeError:
+        message_manager.handle_response_error("Invalid message format")
+    except Exception as e:
+        message_manager.handle_response_error("Error processing message", str(e))
     return handled
 
 gui_hooks.webview_did_receive_js_message.append(on_js_message)

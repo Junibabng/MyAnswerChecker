@@ -2,6 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 import logging
+from aqt.utils import showInfo
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +12,7 @@ class MessageType(Enum):
     ERROR = "error"
     LLM = "llm"
     REVIEW = "review"
+    INFO = "info"
 
 class Message:
     def __init__(
@@ -94,7 +96,34 @@ class MessageManager:
             message_type=MessageType.LLM,
             model_name=model_name
         )
+
+    def create_info_message(self, content: str) -> Message:
+        """정보 메시지 생성"""
+        return Message(
+            content=content,
+            message_type=MessageType.INFO
+        )
         
     def clear_messages(self):
         """모든 메시지 초기화"""
-        self.messages.clear() 
+        self.messages.clear()
+
+    def handle_response_error(self, error_message: str, error_detail: Optional[str] = None) -> str:
+        """에러 응답 처리"""
+        error_msg = self.create_error_message(
+            error_content=error_message,
+            help_text=error_detail
+        )
+        return self.add_message(error_msg)
+
+    def process_complete_response(self, response_text: str, model_name: str) -> str:
+        """완료된 응답 처리"""
+        response_msg = self.create_llm_message(
+            content=response_text,
+            model_name=model_name
+        )
+        return self.add_message(response_msg)
+
+def show_info(message: str):
+    """정보 메시지를 표시"""
+    showInfo(message) 
