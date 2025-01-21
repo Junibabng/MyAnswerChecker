@@ -120,6 +120,7 @@ class AnswerCheckerWindow(QDialog):
             gap: 16px;
             max-width: 800px; 
             margin: 0 auto;
+            align-items: stretch;
         }
 
         .message-container {
@@ -133,14 +134,18 @@ class AnswerCheckerWindow(QDialog):
         .message {
             position: relative;
             padding: 12px 16px;
-            max-width: 70%;
+            min-width: 200px;
+            max-width: 75%;
             word-wrap: break-word;
             font-size: 14px;
             line-height: 1.4;
+            align-self: flex-start;
         }
 
         .user-message-container {
             align-items: flex-end;
+            align-self: flex-end;
+            width: 100%;
         }
 
         .user-message {
@@ -152,11 +157,16 @@ class AnswerCheckerWindow(QDialog):
             position: relative;
             margin-right: 16px;
             padding: 14px 18px;
+            min-width: 200px;
             max-width: 75%;
         }
 
         .system-message-container {
             align-items: flex-start;
+            align-self: flex-start;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
         }
 
         .system-message {
@@ -168,7 +178,23 @@ class AnswerCheckerWindow(QDialog):
             position: relative;
             margin-left: 16px;
             padding: 14px 18px;
+            min-width: 200px;
+            width: auto;
             max-width: 75%;
+            align-self: flex-start;
+        }
+
+        .system-message h3 {
+            margin: 0 0 8px 0;
+            font-size: 15px;
+            color: #333;
+            white-space: normal;
+        }
+
+        .system-message p {
+            margin: 0 0 8px 0;
+            line-height: 1.5;
+            white-space: normal;
         }
 
         .message-time {
@@ -277,11 +303,6 @@ class AnswerCheckerWindow(QDialog):
             margin: 0 0 8px 0;
             font-size: 15px;
             color: #333;
-        }
-
-        .system-message p {
-            margin: 0 0 8px 0;
-            line-height: 1.5;
         }
 
         .system-message p:last-child {
@@ -481,6 +502,22 @@ class AnswerCheckerWindow(QDialog):
 Card ID: {card.id}
 Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
+            
+            # 카드 내용 가져오기
+            card_content, _, _ = self.bridge.get_card_content()
+            if card_content:
+                question_html = f"""
+                <div class="system-message-container">
+                    <div class="model-info">현재 문제</div>
+                    <div class="system-message">
+                        <p>{self.markdown_to_html(card_content)}</p>
+                    </div>
+                    <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
+                </div>
+                """
+                self.clear_chat()
+                self.append_to_chat(question_html)
+            
             if not self.last_difficulty_message:
                 logger.debug("No difficulty message, showing review message")
                 QTimer.singleShot(100, self.show_review_message)
