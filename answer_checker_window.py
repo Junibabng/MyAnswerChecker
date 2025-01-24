@@ -324,6 +324,15 @@ class AnswerCheckerWindow(QDialog):
             background-color: #f8f9fa !important;
             margin: 15px 0 !important;
         }
+
+        .difficulty-message {
+            background-color: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 12px 20px;
+            margin: 10px 0;
+            border-radius: 8px;
+            font-size: 0.95em;
+        }
         </style>
         </head>
         <body>
@@ -511,7 +520,6 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
             self.input_field.clear()
             self.input_field.setFocus()
             if self.last_difficulty_message:
-                logger.debug("Displaying difficulty message")
                 self.append_to_chat(self.last_difficulty_message)
             self.is_initial_answer = True
 
@@ -909,11 +917,8 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 return
 
             if mw.reviewer:
-                # 난이도 메시지 생성
-                current_time = datetime.now().strftime("%p %I:%M")
-                self.last_difficulty_message = self.message_manager.create_system_message(
-                    f"LLM의 추천에 따라 <span class='recommendation {self.get_recommendation_class(recommendation)}'>{recommendation}</span> 난이도로 평가했습니다."
-                )
+                # 대신 MessageManager에서 메시지 가져오기
+                self.last_difficulty_message = self.message_manager.create_difficulty_message(recommendation)
                 logger.debug(f"""
 === Difficulty Message Set ===
 Recommendation: {recommendation}

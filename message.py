@@ -15,6 +15,7 @@ class MessageType(Enum):
     INFO = "info"
     QUESTION = "question"
     WELCOME = "welcome"
+    DIFFICULTY_RECOMMENDATION = "difficulty_recommendation"
 
 class Message:
     def __init__(
@@ -167,6 +168,24 @@ class MessageManager:
             model_name=model_name
         )
         return self.add_message(response_msg)
+
+    def create_difficulty_message(self, recommendation: str) -> Message:
+        """난이도 추천 메시지 생성"""
+        return Message(
+            content=f"LLM의 추천에 따라 <span class='recommendation {self.get_recommendation_class(recommendation)}'>{recommendation}</span> 난이도로 평가했습니다.",
+            message_type=MessageType.DIFFICULTY_RECOMMENDATION,
+            additional_classes=["difficulty-message"]
+        )
+
+    @staticmethod
+    def get_recommendation_class(recommendation: str) -> str:
+        """추천 유형에 따른 CSS 클래스 반환"""
+        return {
+            "Again": "recommendation-again",
+            "Hard": "recommendation-hard",
+            "Good": "recommendation-good",
+            "Easy": "recommendation-easy"
+        }.get(recommendation, "")
 
 def show_info(message: str):
     """정보 메시지를 표시"""
