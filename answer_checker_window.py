@@ -135,111 +135,47 @@ class AnswerCheckerWindow(QDialog):
             width: 100%;
             max-width: 100%;
             word-wrap: break-word;
-            margin: 4px 0;
+            margin: 8px 0;
         }
 
         .message {
             position: relative;
-            padding: 12px 16px;
+            padding: 14px 18px;
             border-radius: 12px;
             max-width: 85%;
-            word-wrap: break-word;
-        }
-
-        .message p {
-            white-space: pre-wrap;
-            word-break: break-word;
-            margin: 0;
-        }
-
-        .user-message-container {
-            align-items: flex-end;
-            align-self: flex-end;
-            width: 100%;
+            background-color: #ffffff;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            margin-left: 16px;
         }
 
         .user-message {
             background-color: #ffeb33;
             margin-left: auto;
-            border-radius: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            color: #000000;
-            position: relative;
             margin-right: 16px;
-            padding: 14px 18px;
-            min-width: 200px;
-            max-width: 75%;
         }
 
-        .system-message-container {
-            align-items: flex-start;
-            align-self: flex-start;
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .system-message {
+        .welcome-message {
             background-color: #ffffff;
-            margin-right: auto;
-            border-radius: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            color: #000000;
-            position: relative;
-            margin-left: 16px;
-            padding: 14px 18px;
-            min-width: 200px;
-            width: auto;
-            max-width: 75%;
-            align-self: flex-start;
         }
 
-        .system-message h3 {
+        .welcome-message h3 {
             margin: 0 0 8px 0;
-            font-size: 15px;
             color: #333;
-            white-space: normal;
+            font-size: 16px;
         }
 
-        .system-message p {
+        .question-message {
+            background-color: #ffffff;
+        }
+
+        .question-message h3 {
             margin: 0 0 8px 0;
-            line-height: 1.5;
-            white-space: normal;
+            color: #333;
+            font-size: 15px;
         }
 
-        .message-time {
-            font-size: 11px;
-            color: #8e8e8e;
-            margin-top: 4px;
-            padding: 0 12px;
-            align-self: flex-end;
-        }
-
-        .user-message-container .message-time {
-            align-self: flex-end;
-        }
-
-        .system-message-container .message-time {
-            align-self: flex-start;
-        }
-
-        .read-status {
-            font-size: 11px;
-            color: #8e8e8e;
-            margin-top: 2px;
-            margin-right: 12px;
-        }
-
-        .loading-indicator {
-            background-color: transparent;
-            border-radius: 20px;
-            padding: 18px;
-            margin: 8px 0;
-            box-shadow: none;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            max-width: 75%;
+        .difficulty-recommendation-message {
+            background-color: #ffffff;
         }
 
         .model-info {
@@ -247,133 +183,18 @@ class AnswerCheckerWindow(QDialog):
             color: #666;
             margin-bottom: 4px;
             margin-left: 16px;
-            font-weight: bold;
         }
 
-        .loading-dots {
-            display: flex;
-            gap: 6px;
+        .message-time {
+            font-size: 11px;
+            color: #8e8e8e;
+            margin-top: 4px;
+            margin-left: 16px;
         }
 
-        .loading-dots span {
-            width: 8px;
-            height: 8px;
-            background-color: #b2b2b2;
-            border-radius: 50%;
-            display: inline-block;
-            animation: bounce 1.4s infinite ease-in-out both;
-        }
-
-        .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
-        .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
-
-        @keyframes bounce {
-            0%, 80%, 100% { 
-                transform: scale(0);
-            }
-            40% { 
-                transform: scale(1.0);
-            }
-        }
-
-        .recommendation-again {
-            background-color: red;
-            color: white;
-            border-radius: 12px;
-            padding: 5px 10px;
-            display: inline-block;
-        }
-
-        .recommendation-hard {
-            background-color: #f0ad4e;
-            color: white;
-            border-radius: 12px;
-            padding: 5px 10px;
-            display: inline-block;
-        }
-
-        .recommendation-good {
-            background-color: green;
-            color: white;
-            border-radius: 12px;
-            padding: 5px 10px;
-            display: inline-block;
-        }
-
-        .recommendation-easy {
-            background-color: blue;
-            color: white;
-            border-radius: 12px;
-            padding: 5px 10px;
-            display: inline-block;
-        }
-
-        .system-message h2,
-        .system-message h3 {
-            margin: 0 0 8px 0;
-            font-size: 15px;
-            color: #333;
-        }
-
-        .system-message p:last-child {
-            margin-bottom: 0;
-        }
-
-        .evaluation, .recommendation, .answer, .reference {
-            margin: 8px 0;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(0,0,0,0.1);
-        }
-
-        .evaluation:last-child,
-        .recommendation:last-child,
-        .answer:last-child,
-        .reference:last-child {
-            border-bottom: none;
-            padding-bottom: 0;
-        }
-
-        /* 웰컴 메시지 스타일 추가 */
-        .welcome-message {
-            background-color: #f8f9fa;
-            border-radius: 15px;
-            padding: 20px;
-            margin: 20px 0;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            text-align: center;
-        }
-        .welcome-message h3 {
-            color: #2c3e50;
-            margin-bottom: 12px;
-        }
-
-        /* 시스템 메시지 컨테이너 스타일 확인 */
-        .system-message-container.question {
-            border-left: 4px solid #3498db !important;
-            background-color: #f8f9fa !important;
-            margin: 15px 0 !important;
-        }
-
-        .difficulty-message {
-            background-color: #f8f9fa;
-            border-left: 4px solid #3498db;
-            padding: 12px 20px;
-            margin: 10px 0;
-            border-radius: 8px;
-            font-size: 0.95em;
-        }
-
-        .difficulty-recommendation {
-            background-color: #f8f9fa;
-            border-left: 4px solid #3498db;
-            margin: 15px 0;
-            padding: 12px 16px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-
-        .difficulty-recommendation .system-message {
-            font-weight: 500;
+        .user-message-container .message-time {
+            margin-right: 16px;
+            text-align: right;
         }
 
         .recommendation {
@@ -382,6 +203,57 @@ class AnswerCheckerWindow(QDialog):
             border-radius: 4px;
             font-weight: bold;
             color: white;
+        }
+
+        .recommendation-again {
+            background-color: #ff4444;  /* 빨간색 */
+            color: white;
+            border-radius: 4px;
+            padding: 4px 8px;
+            display: inline-block;
+        }
+
+        .recommendation-hard {
+            background-color: #ff9933;  /* 주황색 */
+            color: white;
+            border-radius: 4px;
+            padding: 4px 8px;
+            display: inline-block;
+        }
+
+        .recommendation-good {
+            background-color: #44cc44;  /* 초록색 */
+            color: white;
+            border-radius: 4px;
+            padding: 4px 8px;
+            display: inline-block;
+        }
+
+        .recommendation-easy {
+            background-color: #3399ff;  /* 파란색 */
+            color: white;
+            border-radius: 4px;
+            padding: 4px 8px;
+            display: inline-block;
+        }
+
+        /* 난이도 메시지 컨테이너 스타일 */
+        .difficulty-recommendation-message {
+            background-color: #ffffff;
+            padding: 12px 16px;
+            border-radius: 12px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            margin: 8px 0;
+        }
+
+        .error-message {
+            color: #e74c3c;
+            margin-bottom: 8px;
+        }
+
+        .help-text {
+            color: #666;
+            font-size: 0.9em;
         }
         </style>
         </head>

@@ -35,51 +35,46 @@ class Message:
 
     def to_html(self) -> str:
         """메시지를 HTML 형식으로 변환"""
-        if self.message_type == MessageType.QUESTION:
-            return f"""
-            <div class="system-message-container question">
-                <div class="model-info">{self.model_name}</div>
-                <div class="system-message">
-                    <h3>Current Question</h3>
-                    <p>{self.content}</p>
-                </div>
-                <div class="message-time">{self.timestamp.strftime("%p %I:%M")}</div>
-            </div>
-            """
         base_container_class = "message-container"
         base_message_class = "message"
         
-        if self.message_type == MessageType.ERROR:
-            container_html = f"""
-            <div class="system-message-container error">
-                <div class="system-message">
-                    <p class="error-message" style="color: #e74c3c; margin-bottom: 8px;">{self.content}</p>
-                    {f'<p class="help-text" style="color: #666; font-size: 0.9em;">{self.help_text}</p>' if self.help_text else ''}
-                </div>
-                <div class="message-time">{self.timestamp.strftime("%p %I:%M")}</div>
+        # 모든 메시지 타입에 대한 공통 템플릿
+        container_html = f"""
+        <div class="{base_container_class} {self.message_type.value}-message-container">
+            {f'<div class="model-info">{self.model_name}</div>' if self.model_name else ''}
+            <div class="{base_message_class} {self.message_type.value}-message">
+                {self._get_message_content()}
             </div>
-            """
-        elif self.message_type == MessageType.LLM:
-            container_html = f"""
-            <div class="system-message-container">
-                <div class="model-info">{self.model_name or 'Unknown Model'}</div>
-                <div class="system-message">
-                    <p>{self.content}</p>
-                </div>
-                <div class="message-time">{self.timestamp.strftime("%p %I:%M")}</div>
-            </div>
-            """
-        else:
-            container_html = f"""
-            <div class="{base_container_class} {self.message_type.value}-message-container">
-                <div class="{base_message_class} {self.message_type.value}-message">
-                    <p>{self.content}</p>
-                </div>
-                <div class="message-time">{self.timestamp.strftime("%p %I:%M")}</div>
-            </div>
+            <div class="message-time">{self.timestamp.strftime("오후 %I:%M")}</div>
+        </div>
+        """
+        return container_html
+
+    def _get_message_content(self) -> str:
+        """메시지 타입에 따른 내용 생성"""
+        if self.message_type == MessageType.WELCOME:
+            return f"""
+            <h3>✏️ Answer Checker</h3>
+            <p>카드 리뷰를 진행해주세요. 답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요.</p>
             """
         
-        return container_html
+        elif self.message_type == MessageType.QUESTION:
+            return f"""
+            <h3>Current Question</h3>
+            <p>{self.content}</p>
+            """
+        
+        elif self.message_type == MessageType.DIFFICULTY_RECOMMENDATION:
+            return self.content
+        
+        elif self.message_type == MessageType.ERROR:
+            error_content = f'<p class="error-message">{self.content}</p>'
+            if self.help_text:
+                error_content += f'<p class="help-text">{self.help_text}</p>'
+            return error_content
+        
+        else:
+            return f"<p>{self.content}</p>"
 
 class MessageManager:
     def __init__(self):
