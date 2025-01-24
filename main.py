@@ -139,11 +139,39 @@ def on_profile_loaded():
 gui_hooks.profile_did_open.append(on_profile_loaded)
 
 def on_prepare_card(card):
-    """Focus on the text input field when a new card is displayed"""
+    """카드가 표시될 때 호출되는 함수입니다."""
     global answer_checker_window
     if answer_checker_window and answer_checker_window.isVisible():
-        answer_checker_window.web_view.setHtml(answer_checker_window.default_html)
-        answer_checker_window.input_field.setFocus()
+        try:
+            # WebView 초기화
+            if not answer_checker_window._check_webview_state():
+                answer_checker_window.initialize_webview()
+                if not answer_checker_window.wait_for_webview_ready():
+                    logger.error("WebView initialization timeout")
+                    return
+
+            # 카드 내용 가져오기
+            card_content, _, _ = answer_checker_window.bridge.get_card_content()
+            if card_content:
+                # Message 객체 생성
+                question_message = answer_checker_window.message_manager.create_llm_message(
+                    content=answer_checker_window.markdown_to_html(card_content),
+                    model_name="현재 문제"
+                )
+                
+                answer_checker_window.clear_chat()
+                answer_checker_window.append_to_chat(question_message)
+                
+                if not answer_checker_window.last_difficulty_message:
+                    logger.debug("No difficulty message, showing review message")
+                    QTimer.singleShot(100, answer_checker_window.show_review_message)
+            
+            # 입력 필드 포커스
+            answer_checker_window.input_field.setFocus()
+            
+        except Exception as e:
+            logger.exception("Error in on_prepare_card: %s", e)
+            answer_checker_window.show_error_message(f"문제 표시 중 오류가 발생했습니다: {str(e)}")
 
 # Register hooks
 reviewer_did_show_question.append(on_prepare_card)

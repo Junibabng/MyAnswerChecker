@@ -6820,3 +6820,7 @@ libs/yarl-1.18.3.dist-info/top_level.txt
 libs/yarl-1.18.3.dist-info/WHEEL
 MyAnswerChecker_debug.log
 docs/README.md
+.vscode/settings.json
+__pycache__/message.cpython-39.opt-2.pyc
+__pycache__/message.cpython-39.opt-2.pyc
+__pycache__/message.cpython-39.opt-2.pyc

@@ -468,37 +468,7 @@ class AnswerCheckerWindow(QDialog):
 Card ID: {card.id}
 Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
-            
-            try:
-                # 카드 내용 가져오기
-                card_content, _, _ = self.bridge.get_card_content()
-                if card_content:
-                    # Message 객체 생성
-                    question_message = self.message_manager.create_llm_message(
-                        content=self.markdown_to_html(card_content),
-                        model_name="현재 문제"
-                    )
-                    
-                    # WebView 상태 확인 및 초기화
-                    if not self._check_webview_state():
-                        logger.debug("WebView not ready, initializing...")
-                        self.initialize_webview()
-                        if not self.wait_for_webview_ready():
-                            logger.error("WebView initialization timeout")
-                            return
-                    
-                    self.clear_chat()
-                    self.append_to_chat(question_message)
-                    
-                    if not self.last_difficulty_message:
-                        logger.debug("No difficulty message, showing review message")
-                        QTimer.singleShot(100, self.show_review_message)
-                    else:
-                        logger.debug("Difficulty message exists, skipping review message")
-                        
-            except Exception as e:
-                logger.exception("Error in on_show_question: %s", e)
-                self.show_error_message(f"문제 표시 중 오류가 발생했습니다: {str(e)}")
+            # 중복 이벤트 체크만 수행하고 실제 카드 내용 처리는 on_prepare_card에서 수행
 
     def on_show_answer(self, card):
         """Called when an answer is shown."""
