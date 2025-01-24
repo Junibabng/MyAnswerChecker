@@ -46,29 +46,21 @@ class AnswerCheckerWindow(QDialog):
         self.gc_timer.timeout.connect(self.clear_message_containers_periodically)
         self.gc_timer.start(300000)  # 5분마다 실행
         
-        self.input_label = QLabel("Enter your answer:")
-        self.input_field = QLineEdit()
-        self.send_button = QPushButton("Send")
-        self.send_button.clicked.connect(self.send_answer)
-        
+        # 타이머 라벨
         self.timer_label = QLabel("Elapsed time: 0 seconds") 
         self.layout.addWidget(self.timer_label)
 
+        # WebView 직접 추가 (QScrollArea 제거)
         self.web_view = QWebEngineView()
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setWidget(self.web_view)
+        self.layout.addWidget(self.web_view)  # 직접 레이아웃에 추가
 
-        self.layout.addWidget(self.scroll_area)
-
-        # 버튼 레이아웃
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.send_button)
-        
-        # 입력 필드와 버튼을 포함하는 레이아웃
+        # 입력 필드와 버튼
         input_layout = QHBoxLayout()
+        self.input_field = QLineEdit()
+        self.send_button = QPushButton("Send")
+        self.send_button.clicked.connect(self.send_answer)
         input_layout.addWidget(self.input_field)
-        input_layout.addLayout(button_layout)
+        input_layout.addWidget(self.send_button)
         self.layout.addLayout(input_layout)
 
         self.bridge.sendResponse.connect(self.display_response)
@@ -88,22 +80,22 @@ class AnswerCheckerWindow(QDialog):
             background-color: #b2c7d9;
             margin: 0;
             padding: 20px;
+            height: calc(100vh - 40px);  /* 패딩 고려 */
             display: flex;
             flex-direction: column;
-            overflow-y: auto;
-            min-height: 100vh;
+            overflow: hidden;  /* 바깥 스크롤 방지 */
         }
 
         .chat-container {
-            flex-grow: 1;
-            overflow-y: auto;
+            flex: 1;
+            overflow-y: auto;  /* 내부 스크롤만 허용 */
             padding: 10px;
             display: flex;
             flex-direction: column;
             gap: 16px;
             max-width: 800px; 
             margin: 0 auto;
-            align-items: stretch;
+            scroll-behavior: smooth;  /* 부드러운 스크롤 효과 */
         }
 
         .message-container {
@@ -477,7 +469,18 @@ class AnswerCheckerWindow(QDialog):
                 var div = document.createElement('div');
                 div.innerHTML = `%s`;
                 chatContainer.appendChild(div);
-                chatContainer.scrollTop = chatContainer.scrollHeight;
+                
+                // 스크롤 애니메이션 추가
+                chatContainer.scrollTo({
+                    top: chatContainer.scrollHeight,
+                    behavior: 'smooth'
+                });
+                
+                // 백업 스크롤 (애니메이션이 실패할 경우)
+                setTimeout(() => {
+                    chatContainer.scrollTop = chatContainer.scrollHeight;
+                }, 100);
+                
                 return true;
             }
             return false;
