@@ -303,6 +303,27 @@ class AnswerCheckerWindow(QDialog):
             border-bottom: none;
             padding-bottom: 0;
         }
+
+        /* 웰컴 메시지 스타일 추가 */
+        .welcome-message {
+            background-color: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        .welcome-message h3 {
+            color: #2c3e50;
+            margin-bottom: 12px;
+        }
+
+        /* 시스템 메시지 컨테이너 스타일 확인 */
+        .system-message-container.question {
+            border-left: 4px solid #3498db !important;
+            background-color: #f8f9fa !important;
+            margin: 15px 0 !important;
+        }
         </style>
         </head>
         <body>
@@ -315,6 +336,8 @@ class AnswerCheckerWindow(QDialog):
         reviewer_did_show_question.append(self.on_show_question)
         reviewer_did_show_answer.append(self.on_show_answer)
         reviewer_did_answer_card.append(self.on_user_answer_card)
+        gui_hooks.reviewer_did_show_question.remove(self.on_prepare_card)
+        gui_hooks.reviewer_did_show_question.append(self.on_prepare_card)
 
         self.is_initial_answer = True
         self.is_processing = False
@@ -369,10 +392,8 @@ class AnswerCheckerWindow(QDialog):
                     self.initialization_event.set()
                 logger.info("WebView 초기화 완료")
                 
-                # 웰컴 메시지 표시
-                welcome_message = self.message_manager.create_system_message(
-                    "카드 리뷰를 진행해주세요.\n답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요."
-                )
+                # 웰컴 메시지 표시 (기존 코드 대체)
+                welcome_message = self.message_manager.create_welcome_message()
                 self.append_to_chat(welcome_message)
                 
                 # 저장된 메시지 처리
@@ -453,7 +474,8 @@ class AnswerCheckerWindow(QDialog):
 
     def show_review_message(self):
         """리뷰 메시지를 표시합니다."""
-        pass  # 초기 로드 시 _on_initial_load에서 처리하므로 여기서는 아무것도 하지 않습니다.
+        review_msg = self.message_manager.create_review_message("기본 권장값")
+        self.append_to_chat(review_msg)
 
     def on_show_question(self, card):
         """새로운 질문이 표시될 때 호출됩니다."""
@@ -942,16 +964,12 @@ This will trigger on_user_answer_card
 
     def clear_chat(self):
         """채팅 내용을 모두 지우고 새로운 시작 메시지만 표시"""
-        if not self._check_webview_state():
-            return
-            
-        self.message_manager.clear_messages()
-        self.web_view.setHtml(self.default_html)
-        
-        if mw.state == "review":
-            self.show_review_message()
-        else:
-            self.show_default_message()
+        self.web_view.page().runJavaScript("""
+            document.querySelector('.chat-container').innerHTML = '';
+        """)
+        # 필요한 경우 웰컴 메시지 추가
+        welcome_message = self.message_manager.create_welcome_message()
+        self.append_to_chat(welcome_message)
 
     def on_webview_loaded(self):
         """웹뷰 로드 완료 시 호출되는 핸들러"""
@@ -1032,3 +1050,25 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         for request_id in containers_to_remove:
             del self.message_containers[request_id]
             logger.info(f"Removed old message container with request_id: {request_id}")
+
+    def on_prepare_card(self, card):
+        """카드 준비 시 호출되는 핸들러"""
+        if self.isVisible():
+            try:
+                logger.debug("=== Preparing card ===")
+                card_content, _, _ = self.bridge.get_card_content()
+                logger.debug(f"Card content: {card_content[:50]}...")  # 내용 일부 로깅
+                
+                question_message = self.message_manager.create_question_message(
+                    content=self.markdown_to_html(card_content)
+                )
+                logger.debug(f"Generated message HTML: {question_message.to_html()[:200]}...")
+                
+                self.clear_chat()
+                # clear_chat 후 콜백으로 메시지 추가
+                def delayed_append():
+                    self.append_to_chat(question_message)
+                
+                QTimer.singleShot(300, delayed_append)  # 0.3초 딜레이 추가
+            except Exception as e:
+                self.show_error_message(f"카드 로드 실패: {str(e)}")

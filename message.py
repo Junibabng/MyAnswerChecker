@@ -13,6 +13,8 @@ class MessageType(Enum):
     LLM = "llm"
     REVIEW = "review"
     INFO = "info"
+    QUESTION = "question"
+    WELCOME = "welcome"
 
 class Message:
     def __init__(
@@ -20,16 +22,29 @@ class Message:
         content: str,
         message_type: MessageType,
         help_text: Optional[str] = None,
-        model_name: Optional[str] = None
+        model_name: Optional[str] = None,
+        additional_classes: Optional[list] = None
     ):
         self.content = content
         self.message_type = message_type
         self.help_text = help_text
         self.model_name = model_name
         self.timestamp = datetime.now()
+        self.additional_classes = additional_classes
 
     def to_html(self) -> str:
         """메시지를 HTML 형식으로 변환"""
+        if self.message_type == MessageType.QUESTION:
+            return f"""
+            <div class="system-message-container question">
+                <div class="model-info">{self.model_name}</div>
+                <div class="system-message">
+                    <h3>Current Question</h3>
+                    <p>{self.content}</p>
+                </div>
+                <div class="message-time">{self.timestamp.strftime("%p %I:%M")}</div>
+            </div>
+            """
         base_container_class = "message-container"
         base_message_class = "message"
         
@@ -102,6 +117,35 @@ class MessageManager:
         return Message(
             content=content,
             message_type=MessageType.INFO
+        )
+        
+    def create_question_message(self, content: str, model_name: str = "Current Question") -> Message:
+        """문제 표시용 메시지 생성"""
+        return Message(
+            content=content,
+            message_type=MessageType.QUESTION,
+            model_name=model_name
+        )
+        
+    def create_review_message(self, recommendation: str) -> Message:
+        """리뷰 권장 메시지 생성"""
+        return Message(
+            content=f"Recommended review interval: {recommendation}",
+            message_type=MessageType.REVIEW
+        )
+        
+    def create_welcome_message(self):
+        """웰컴 메시지 생성"""
+        welcome_content = """
+        <h3>✏️ Answer Checker</h3>
+        <p style='color: #666; font-size: 0.9em;'>
+            카드 리뷰를 진행해주세요. 답변을 입력하고 Enter 키를 누르거나 Send 버튼을 클릭하세요.
+        </p>
+        """
+        return Message(
+            content=welcome_content,
+            message_type=MessageType.WELCOME,
+            additional_classes=["welcome-message"]
         )
         
     def clear_messages(self):
