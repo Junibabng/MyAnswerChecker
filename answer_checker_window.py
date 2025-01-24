@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QHBoxLayout, QInputDialog, QDoubleSpinBox, QSpinBox, QComboBox, QGroupBox
+from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QHBoxLayout, QInputDialog, QDoubleSpinBox, QSpinBox, QComboBox, QGroupBox, QWidget, QSizePolicy
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtCore import QTimer, Qt, QThread, QMetaObject, Q_ARG, pyqtSlot
 from PyQt6.QtWebChannel import QWebChannel
@@ -29,6 +29,35 @@ class AnswerCheckerWindow(QDialog):
         self.setWindowTitle("MyAnswerChecker")
         self.setGeometry(300, 300, 800, 600)
         self.layout = QVBoxLayout(self)
+        
+        # 최소 창 크기 설정
+        self.setMinimumSize(400, 300)
+        
+        # 타이머 라벨
+        self.timer_label = QLabel("Elapsed time: 0 seconds")
+        self.timer_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.layout.addWidget(self.timer_label)
+
+        # WebView 설정
+        self.web_view = QWebEngineView()
+        self.web_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.layout.addWidget(self.web_view)
+
+        # 입력 필드와 버튼을 포함하는 컨테이너 위젯
+        input_container = QWidget()
+        input_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        input_layout = QHBoxLayout(input_container)
+        input_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.input_field = QLineEdit()
+        self.send_button = QPushButton("Send")
+        self.send_button.clicked.connect(self.send_answer)
+        
+        input_layout.addWidget(self.input_field)
+        input_layout.addWidget(self.send_button)
+        
+        self.layout.addWidget(input_container)
+
         self.last_response = None
         self.is_webview_initialized = False
         self.is_webview_loading = False
@@ -46,23 +75,6 @@ class AnswerCheckerWindow(QDialog):
         self.gc_timer.timeout.connect(self.clear_message_containers_periodically)
         self.gc_timer.start(300000)  # 5분마다 실행
         
-        # 타이머 라벨
-        self.timer_label = QLabel("Elapsed time: 0 seconds") 
-        self.layout.addWidget(self.timer_label)
-
-        # WebView 직접 추가 (QScrollArea 제거)
-        self.web_view = QWebEngineView()
-        self.layout.addWidget(self.web_view)  # 직접 레이아웃에 추가
-
-        # 입력 필드와 버튼
-        input_layout = QHBoxLayout()
-        self.input_field = QLineEdit()
-        self.send_button = QPushButton("Send")
-        self.send_button.clicked.connect(self.send_answer)
-        input_layout.addWidget(self.input_field)
-        input_layout.addWidget(self.send_button)
-        self.layout.addLayout(input_layout)
-
         self.bridge.sendResponse.connect(self.display_response)
         self.bridge.sendQuestionResponse.connect(self.display_question_response)
         self.bridge.sendJokeResponse.connect(self.display_joke)
@@ -80,41 +92,64 @@ class AnswerCheckerWindow(QDialog):
             background-color: #b2c7d9;
             margin: 0;
             padding: 20px;
-            height: calc(100vh - 40px);  /* 패딩 고려 */
             display: flex;
             flex-direction: column;
-            overflow: hidden;  /* 바깥 스크롤 방지 */
+            height: 100vh;
+            box-sizing: border-box;
         }
 
         .chat-container {
-            flex: 1;
-            overflow-y: auto;  /* 내부 스크롤만 허용 */
+            flex: 1 1 auto;
+            overflow-y: scroll;
             padding: 10px;
             display: flex;
             flex-direction: column;
             gap: 16px;
-            max-width: 800px; 
+            max-width: 800px;
+            width: 100%;
             margin: 0 auto;
-            scroll-behavior: smooth;  /* 부드러운 스크롤 효과 */
+            scroll-behavior: smooth;
+            box-sizing: border-box;
+            min-height: 0;
+        }
+
+        .chat-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .chat-container::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 4px;
+        }
+
+        .chat-container::-webkit-scrollbar-thumb {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+        }
+
+        .chat-container::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 0, 0, 0.3);
         }
 
         .message-container {
             width: 100%;
-            display: flex;
-            flex-direction: column;
-            margin: 8px 0;
-            position: relative;
+            max-width: 100%;
+            word-wrap: break-word;
+            margin: 4px 0;
         }
 
         .message {
             position: relative;
             padding: 12px 16px;
-            min-width: 200px;
-            max-width: 75%;
+            border-radius: 12px;
+            max-width: 85%;
             word-wrap: break-word;
-            font-size: 14px;
-            line-height: 1.4;
-            align-self: flex-start;
+        }
+
+        .message p {
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin: 0;
         }
 
         .user-message-container {
@@ -366,6 +401,9 @@ class AnswerCheckerWindow(QDialog):
         self.is_initial_answer = True
         self.is_processing = False
         self.message_manager = MessageManager()
+        
+        # 웰컴 메시지 표시 여부를 추적하는 플래그 추가
+        self.welcome_message_shown = False
 
     def initialize_webview(self):
         """WebView 초기화 및 설정"""
@@ -413,16 +451,18 @@ class AnswerCheckerWindow(QDialog):
                 with self.initialization_lock:
                     self.is_webview_initialized = True
                     self.is_webview_loading = False
-                    self.is_webview_ready = True  # WebView 준비 상태 설정
+                    self.is_webview_ready = True
                     self.initialization_event.set()
                 logger.info("WebView 초기화 완료")
                 
                 # 큐에 있는 메시지들 처리
                 self._process_message_queue()
                 
-                # 웰컴 메시지 표시
-                welcome_message = self.message_manager.create_welcome_message()
-                self.append_to_chat(welcome_message)
+                # 웰컴 메시지는 첫 로드에만 표시
+                if not self.welcome_message_shown:
+                    welcome_message = self.message_manager.create_welcome_message()
+                    self.append_to_chat(welcome_message)
+                    self.welcome_message_shown = True
                 
                 # 저장된 메시지 처리
                 self._process_saved_messages()
@@ -1026,9 +1066,11 @@ This will trigger on_user_answer_card
         else:
             self.message_queue = []
         
-        # 웰컴 메시지 추가
-        welcome_message = self.message_manager.create_welcome_message()
-        self.append_to_chat(welcome_message)
+        # 웰컴 메시지는 첫 리뷰에만 표시
+        if not self.welcome_message_shown:
+            welcome_message = self.message_manager.create_welcome_message()
+            self.append_to_chat(welcome_message)
+            self.welcome_message_shown = True
         
         # 난이도 메시지가 있으면 추가 (큐에서 하나만 처리)
         if self.message_queue:
@@ -1124,7 +1166,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 
                 question_message = self.message_manager.create_question_message(
                     content=self.markdown_to_html(card_content)
-                )
+                )  # 괄호 추가
                 logger.debug(f"Generated message HTML: {question_message.to_html()[:200]}...")
                 
                 self.clear_chat()
