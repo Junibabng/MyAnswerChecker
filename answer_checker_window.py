@@ -38,6 +38,8 @@ class AnswerCheckerWindow(QDialog):
         self.last_difficulty_message = None
         self.last_question_time = 0
         self.message_containers = {}
+        self.message_queue = []  # 메시지 큐 추가
+        self.is_webview_ready = False  # WebView 준비 상태 추가
         
         # 가비지 컬렉션 타이머 설정
         self.gc_timer = QTimer(self)
@@ -333,6 +335,27 @@ class AnswerCheckerWindow(QDialog):
             border-radius: 8px;
             font-size: 0.95em;
         }
+
+        .difficulty-recommendation {
+            background-color: #f8f9fa;
+            border-left: 4px solid #3498db;
+            margin: 15px 0;
+            padding: 12px 16px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        .difficulty-recommendation .system-message {
+            font-weight: 500;
+        }
+
+        .recommendation {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+            color: white;
+        }
         </style>
         </head>
         <body>
@@ -398,10 +421,14 @@ class AnswerCheckerWindow(QDialog):
                 with self.initialization_lock:
                     self.is_webview_initialized = True
                     self.is_webview_loading = False
+                    self.is_webview_ready = True  # WebView 준비 상태 설정
                     self.initialization_event.set()
                 logger.info("WebView 초기화 완료")
                 
-                # 웰컴 메시지 표시 (기존 코드 대체)
+                # 큐에 있는 메시지들 처리
+                self._process_message_queue()
+                
+                # 웰컴 메시지 표시
                 welcome_message = self.message_manager.create_welcome_message()
                 self.append_to_chat(welcome_message)
                 
@@ -421,6 +448,12 @@ class AnswerCheckerWindow(QDialog):
             self.initialization_event.clear()
             self.show_error_message(f"WebView 초기화 중 오류가 발생했습니다: {str(e)}")
 
+    def _process_message_queue(self):
+        """큐에 있는 메시지들을 처리"""
+        while self.message_queue:
+            message = self.message_queue.pop(0)
+            self.append_to_chat(message)
+
     def _is_webview_ready(self):
         """WebView가 사용 가능한 상태인지 확인"""
         return self.is_webview_initialized and not self.is_webview_loading
@@ -430,10 +463,12 @@ class AnswerCheckerWindow(QDialog):
         return self.initialization_event.wait(timeout)
 
     def append_to_chat(self, message: Message):
-        """채팅창에 메시지를 추가합니다."""
-        if not self._check_webview_state():
+        """채팅창에 메시지를 추가"""
+        if not self.is_webview_ready:
+            logger.debug("WebView not ready, queueing message")
+            self.message_queue.append(message)
             return
-            
+        
         html_content = message.to_html()
         script = """
         (function() {
@@ -442,7 +477,7 @@ class AnswerCheckerWindow(QDialog):
                 var div = document.createElement('div');
                 div.innerHTML = `%s`;
                 chatContainer.appendChild(div);
-                window.scrollTo(0, document.body.scrollHeight);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
                 return true;
             }
             return false;
@@ -507,7 +542,7 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
             pass
 
     def on_user_answer_card(self, reviewer, card, ease):
-        """Called when the user answers a card."""
+        """카드 답변 시 호출되는 핸들러"""
         if self.isVisible():
             logger.debug(f"""
 === User Answer Card Event ===
@@ -515,12 +550,17 @@ Card ID: {card.id}
 Ease: {ease}
 Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
+            
+            # 난이도 메시지를 설정 (큐에 추가하지 않음)
+            if self.last_difficulty_message:
+                self.message_queue = [self.last_difficulty_message]  # 큐를 새로 생성하고 마지막 메시지만 포함
+                logger.debug("Difficulty message set for next card")
+            
+            # 대화 기록 초기화
             self.bridge.clear_conversation_history()
             self.clear_chat()
             self.input_field.clear()
             self.input_field.setFocus()
-            if self.last_difficulty_message:
-                self.append_to_chat(self.last_difficulty_message)
             self.is_initial_answer = True
 
     def closeEvent(self, event):
@@ -969,12 +1009,27 @@ This will trigger on_user_answer_card
 
     def clear_chat(self):
         """채팅 내용을 모두 지우고 새로운 시작 메시지만 표시"""
+        if not self.is_webview_ready:
+            logger.debug("WebView not ready, skipping clear_chat")
+            return
+        
         self.web_view.page().runJavaScript("""
             document.querySelector('.chat-container').innerHTML = '';
         """)
-        # 필요한 경우 웰컴 메시지 추가
+        
+        # 메시지 큐 초기화 (마지막 난이도 메시지만 유지)
+        if self.last_difficulty_message:
+            self.message_queue = [self.last_difficulty_message]
+        else:
+            self.message_queue = []
+        
+        # 웰컴 메시지 추가
         welcome_message = self.message_manager.create_welcome_message()
         self.append_to_chat(welcome_message)
+        
+        # 난이도 메시지가 있으면 추가 (큐에서 하나만 처리)
+        if self.message_queue:
+            self.append_to_chat(self.message_queue[0])
 
     def on_webview_loaded(self):
         """웹뷰 로드 완료 시 호출되는 핸들러"""
