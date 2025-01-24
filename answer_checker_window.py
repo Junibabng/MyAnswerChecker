@@ -487,42 +487,8 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def display_loading_animation(self, show):
         """Shows or hides the loading animation in the AI's response."""
-        if not self._check_webview_state():
-            return
-
-        logger.debug(f"""
-=== Loading Animation Event ===
-Action: {'Show' if show else 'Hide'}
-Current State: {mw.state}
-Has last_response: {bool(self.last_response)}
-Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
-""")
-        if show:
-            loading_message = self.message_manager.create_system_message(
-                '<div class="loading-indicator"><div class="loading-dots">'
-                '<span></span><span></span><span></span></div></div>'
-            )
-            self.append_to_chat(loading_message)
-        else:
-            # 로딩 애니메이션 제거 스크립트
-            script = """
-            (function() {
-                var loadingIndicators = document.querySelectorAll('.loading-indicator');
-                if (loadingIndicators.length > 0) {
-                    var lastLoadingIndicator = loadingIndicators[loadingIndicators.length - 1];
-                    var messageContainer = lastLoadingIndicator.closest('.system-message-container');
-                    if (messageContainer) {
-                        messageContainer.parentNode.removeChild(messageContainer);
-                        return true;
-                    }
-                }
-                return false;
-            })();
-            """
-            self.web_view.page().runJavaScript(
-                script,
-                lambda result: logger.debug(f"Loading animation removal {'successful' if result else 'failed'}")
-            )
+        # 로딩 애니메이션 기능 비활성화
+        pass
 
     def update_timer_display(self, elapsed_time):
         """Updates the elapsed time in the UI."""
@@ -710,9 +676,6 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
         )
         self.append_to_chat(user_message)
 
-        # AI 응답 로딩 애니메이션 표시
-        self.display_loading_animation(True)
-
         # Save current card ID
         current_card = mw.reviewer.card
         if current_card:
@@ -771,8 +734,8 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
             )
             self.append_to_chat(user_message)
             
-            # Show loading animation
-            self.display_loading_animation(True)
+            # 로딩 애니메이션 제거
+            # self.display_loading_animation(True)
             
             # Clear input field
             self.input_field.clear()
@@ -782,7 +745,7 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
             
         except Exception as e:
             logger.exception("Error in process_additional_question: %s", e)
-            self.display_loading_animation(False)
+            # self.display_loading_animation(False) 라인 제거
             self.show_error_message("질문 처리 중 오류가 발생했습니다.")
             self.is_processing = False
 
@@ -803,7 +766,6 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
 
         except Exception as e:
             logger.exception("Error in _continue_question_processing: %s", e)
-            self.display_loading_animation(False)
             self.show_error_message(str(e))
             self.is_processing = False
 
@@ -830,7 +792,6 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
     def _finish_processing(self):
         """Reset processing state"""
         self.is_processing = False
-        self.display_loading_animation(False)
 
     @pyqtSlot(str)
     def _show_error_message(self, message):
