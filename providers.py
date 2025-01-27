@@ -296,7 +296,7 @@ class LLMProvider(ABC):
 
 class OpenAIProvider(LLMProvider):
     """OpenAI API를 사용하는 LLM 프로바이더"""
-    def __init__(self, api_key, base_url, model_name):
+    def __init__(self, api_key, base_url, model, temperature=0.7):
         super().__init__()
         if not api_key:
             logger.error("API 키가 제공되지 않음")
@@ -304,26 +304,28 @@ class OpenAIProvider(LLMProvider):
         
         logger.info(
             f"OpenAI 프로바이더 초기화:\n"
-            f"Model: {model_name}\n"
+            f"Model: {model}\n"
+            f"Temperature: {temperature}\n"
             f"Base URL: {base_url}"
         )
         
         self.api_key = api_key
         self.base_url = base_url
-        self.model_name = model_name
+        self.model_name = model
+        self.temperature = temperature
         self.system_prompt = "You are a helpful assistant."
 
     def set_system_prompt(self, prompt):
         logger.debug(f"시스템 프롬프트 설정: {prompt}")
         self.system_prompt = prompt
 
-    def call_api(self, system_message, user_message, temperature=0.2):
+    def call_api(self, system_message, user_message, temperature=None):
         """LLM API를 호출하여 응답을 받아옵니다."""
         try:
             logger.debug(
                 "API 호출 준비:\n"
                 f"System Message: {system_message}\n"
-                f"Temperature: {temperature}"
+                f"Temperature: {temperature if temperature is not None else self.temperature}"
             )
             
             messages = [
@@ -343,8 +345,12 @@ class OpenAIProvider(LLMProvider):
             })
             raise
 
-    def generate_response(self, messages, temperature=0.7):
+    def generate_response(self, messages, temperature=None):
         try:
+            # temperature가 None이면 클래스의 temperature 값 사용
+            if temperature is None:
+                temperature = self.temperature
+                
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self.api_key}"
@@ -370,7 +376,7 @@ class OpenAIProvider(LLMProvider):
                 f"Message Count: {len(messages)}"
             )
 
-            result = self._make_api_request(headers, payload, url)  # url 인자 추가
+            result = self._make_api_request(headers, payload, url)
             
             if not result.get('choices'):
                 logger.error(f"응답에 choices 필드 없음: {result}")
@@ -400,7 +406,7 @@ class OpenAIProvider(LLMProvider):
 
 class GeminiProvider(LLMProvider):
     """Gemini API를 사용하는 LLM 프로바이더"""
-    def __init__(self, api_key, model_name="gemini-2.0-flash-exp"):
+    def __init__(self, api_key, model_name="gemini-2.0-flash-exp", temperature=0.7):
         super().__init__()
         if not api_key:
             logger.error("API 키가 제공되지 않음")
@@ -418,10 +424,12 @@ class GeminiProvider(LLMProvider):
         logger.info(
             f"Gemini 프로바이더 초기화:\n"
             f"Model: {model_name}\n"
+            f"Temperature: {temperature}\n"
             f"API Keys Count: {len(self.api_keys)}"
         )
             
         self.model_name = model_name
+        self.temperature = temperature
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
         self.system_prompt = None
 
@@ -450,7 +458,7 @@ class GeminiProvider(LLMProvider):
         logger.debug(f"시스템 프롬프트 설정: {prompt}")
         self.system_prompt = prompt
 
-    def call_api(self, system_message, user_message, temperature=0.2):
+    def call_api(self, system_message, user_message, temperature=None):
         """LLM API를 호출하여 응답을 받아옵니다."""
         try:
             logger.info("=== API 호출 시작 ===")
@@ -467,10 +475,14 @@ class GeminiProvider(LLMProvider):
             logger.error(f"=== API 호출 실패 ===\n{str(e)}")
             raise
 
-    def generate_response(self, messages, temperature=0.7, api_key=None):
+    def generate_response(self, messages, temperature=None, api_key=None):
         try:
             if api_key is None:
                 api_key = self._get_next_api_key()
+                
+            # temperature가 None이면 클래스의 temperature 값 사용
+            if temperature is None:
+                temperature = self.temperature
                 
             url = f"{self.base_url}/{self.model_name}:generateContent?key={api_key}"
             

@@ -2,10 +2,11 @@ import logging
 from aqt import mw, gui_hooks
 from aqt.qt import QAction, QMenu
 from aqt.gui_hooks import reviewer_did_show_question, reviewer_did_show_answer
-from aqt.utils import showWarning
+from aqt.utils import showWarning, showInfo
 from .bridge import Bridge
 from .answer_checker_window import AnswerCheckerWindow
-from .main import openSettingsDialog, load_global_settings
+from .main import add_menu, openSettingsDialog, initialize_addon, load_global_settings
+from .settings_manager import settings_manager
 
 # Global instances
 bridge = None
@@ -59,31 +60,22 @@ def open_answer_checker_window():
         logger.error(f"Error opening Answer Checker: {str(e)}")
         showWarning(f"Error opening Answer Checker: {str(e)}")
 
-def add_menu():
-    """Add menu items to Anki"""
+def on_profile_loaded():
+    """Function to be executed when the profile is loaded"""
+    global bridge
     try:
-        tools_menu = next((action.menu() for action in mw.form.menubar.actions() 
-                          if action.text() == "&Tools"), None)
-        if not tools_menu:
-            logger.error("Tools menu not found")
-            return
-
-        answer_checker_menu = QMenu("Answer Checker", tools_menu)
-        tools_menu.addMenu(answer_checker_menu)
-
-        menu_items = [
-            ("Open Answer Checker", open_answer_checker_window),
-            ("Settings", openSettingsDialog)
-        ]
-
-        for label, callback in menu_items:
-            action = QAction(label, answer_checker_menu)
-            action.triggered.connect(callback)
-            answer_checker_menu.addAction(action)
-            
-        logger.debug("Menu items added successfully")
+        if bridge is None:
+            initialize_addon()
+            logger.info("Addon initialization complete")
+        else:
+            logger.info("Addon already initialized.")
     except Exception as e:
-        logger.error(f"Error adding menu items: {str(e)}")
+        logger.exception("Error initializing addon: %s", e)
+        showInfo(f"Error initializing addon: {str(e)}")
 
-# Initialize addon when profile is loaded
-gui_hooks.profile_did_open.append(initialize_addon)
+# Register the profile loaded hook
+gui_hooks.profile_did_open.append(on_profile_loaded)
+
+# Register reviewer hooks
+gui_hooks.reviewer_did_show_question.append(on_show_question)
+gui_hooks.reviewer_did_show_answer.append(on_show_answer)

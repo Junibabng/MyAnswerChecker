@@ -26,6 +26,7 @@ from aqt.gui_hooks import (
 from .providers import LLMProvider, OpenAIProvider, GeminiProvider
 import traceback
 from .message import MessageType, Message
+from .settings_manager import settings_manager
 
 # Logging setup
 import logging
@@ -154,6 +155,11 @@ class LLMProviderError(BridgeError):
     def __init__(self, message):
         super().__init__(message, "LLM 서비스 설정을 확인해주세요.")
 
+class InvalidAPIKeyError(BridgeError):
+    """API 키 관련 에러"""
+    def __init__(self, message):
+        super().__init__(message, "API 키가 설정되지 않았습니다.")
+
 class Bridge(QObject):
     # Constants
     RESPONSE_TIMEOUT = 10  # seconds
@@ -172,9 +178,16 @@ class Bridge(QObject):
         super().__init__(parent)
         self._initialize_attributes()
         self._setup_timer()
-        self.update_llm_provider()
+        
+        # 설정 매니저에 옵저버로 등록
+        settings_manager.add_observer(self)
+        
+        # 초기 설정 로드
+        settings = settings_manager.load_settings()
+        self.update_config(settings)
+        
         self.partial_response = ""
-        self.system_prompt = "You are a helpful assistant."  # system_prompt 속성 초기화
+        logger.info("Bridge initialized")
 
     def _initialize_attributes(self):
         """Initialize all instance attributes"""
@@ -389,45 +402,46 @@ class Bridge(QObject):
 
     def update_llm_provider(self):
         """Update LLM provider with current settings"""
-        settings = QSettings("LLM_response_evaluator", "Settings")
-        provider_type = settings.value("providerType", "openai").lower()
+        settings = settings_manager.load_settings()
+        provider_type = settings.get("providerType", "openai").lower()
         
         # 시스템 프롬프트 설정 업데이트
-        self.system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
+        self.system_prompt = settings.get("systemPrompt", "You are a helpful assistant.")
         
         # API 키 마스킹 개선
         def mask_key(key):
-            return f"****...{key[-4:]}" if key and len(key) > 4 else "[키 없음]"  # 키 없을 경우 명시적 표시
+            return f"****...{key[-4:]}" if key and len(key) > 4 else "[키 없음]"
             
-        openai_key = settings.value("openaiApiKey", "")
-        gemini_key = settings.value("geminiApiKey", "")
+        openai_key = settings.get("openaiApiKey", "")
+        gemini_key = settings.get("geminiApiKey", "")
         
         logger.debug(f"""
 === LLM 프로바이더 업데이트 ===
 • 현재 제공자: {provider_type}
 • OpenAI 키: {mask_key(openai_key)}
 • Gemini 키: {mask_key(gemini_key)}
-• 시스템 프롬프트: {self.system_prompt[:50]}...  # 프롬프트 축약 표시
+• 시스템 프롬프트: {self.system_prompt[:50]}...
 =============================
 """)
         
         try:
             if provider_type == "openai":
-                # OpenAI 설정 값 읽기
-                api_key = settings.value("openaiApiKey", "")
-                base_url = settings.value("baseUrl", "https://api.openai.com")
-                model_name = settings.value("modelName", "gpt-4o-mini")
-                self.llm_provider = OpenAIProvider(api_key, base_url, model_name)
-            elif provider_type == "gemini":
-                # Gemini 설정 값 이름 수정
-                api_key = settings.value("geminiApiKey", "")  # 추가
-                model_name = settings.value("geminiModel", "gemini-2.0-flash-exp")  # 추가
-                self.llm_provider = GeminiProvider(api_key, model_name)
+                self.llm_provider = OpenAIProvider(
+                    api_key=settings.get("openaiApiKey", ""),
+                    base_url=settings.get("baseUrl", "https://api.openai.com"),
+                    model=settings.get("modelName", "gpt-4o-mini"),
+                    temperature=float(settings.get("temperature", 0.7))
+                )
+            else:
+                self.llm_provider = GeminiProvider(
+                    api_key=settings.get("geminiApiKey", ""),
+                    model_name=settings.get("geminiModel", "gemini-2.0-flash-exp"),
+                    temperature=float(settings.get("temperature", 0.7))
+                )
             
             # 시스템 프롬프트 강제 업데이트
-            current_system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
             if hasattr(self.llm_provider, 'set_system_prompt'):
-                self.llm_provider.set_system_prompt(current_system_prompt)
+                self.llm_provider.set_system_prompt(self.system_prompt)
             
             logger.info(f"LLM Provider changed to {provider_type}")
             
@@ -437,19 +451,12 @@ class Bridge(QObject):
 
     def call_llm_api(self, system_message, user_message_content, max_retries=3):
         """Calls the selected LLM API to get a response."""
-        settings = QSettings("LLM_response_evaluator", "Settings")
-        api_key = settings.value("apiKey", "")
-        temperature = float(settings.value("temperature", "0.2"))
-
-        if not api_key:
-            return "API Key is not set."
-
         if not self.llm_provider:
             self.update_llm_provider()
 
         for attempt in range(max_retries):
             try:
-                return self.llm_provider.call_api(system_message, user_message_content, temperature=temperature)
+                return self.llm_provider.call_api(system_message, user_message_content)
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error calling LLM API (Attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt == max_retries - 1:
@@ -500,10 +507,10 @@ class Bridge(QObject):
             logger.debug("Received answer from JS: %s", user_answer)
             try:
                 # 설정값 로깅 추가
-                settings = QSettings("LLM_response_evaluator", "Settings")
-                easy_threshold = int(settings.value("easyThreshold", "5"))
-                good_threshold = int(settings.value("goodThreshold", "15"))
-                hard_threshold = int(settings.value("hardThreshold", "50"))
+                settings = settings_manager.load_settings()
+                easy_threshold = int(settings.get("easyThreshold", "5"))
+                good_threshold = int(settings.get("goodThreshold", "15"))
+                hard_threshold = int(settings.get("hardThreshold", "50"))
                 
                 logger.debug(f"Current threshold settings - Easy: {easy_threshold}s, Good: {good_threshold}s, Hard: {hard_threshold}s")
                 
@@ -546,15 +553,15 @@ class Bridge(QObject):
             model = note.model()
             model_type = model.get('type')
 
-            settings = QSettings("LLM_response_evaluator", "Settings")
-            easy_threshold = int(settings.value("easyThreshold", "5"))
-            good_threshold = int(settings.value("goodThreshold", "15"))
-            hard_threshold = int(settings.value("hardThreshold", "50"))
+            settings = settings_manager.load_settings()
+            easy_threshold = int(settings.get("easyThreshold", "5"))
+            good_threshold = int(settings.get("goodThreshold", "15"))
+            hard_threshold = int(settings.get("hardThreshold", "50"))
             elapsed_time = self.llm_data.get("elapsed_time")
-            language = settings.value("language", "English")
+            language = settings.get("language", "English")
             
             # 현재 시스템 프롬프트 확인 및 업데이트
-            current_system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
+            current_system_prompt = settings.get("systemPrompt", "You are a helpful assistant.")
             if current_system_prompt != self.system_prompt:
                 self.system_prompt = current_system_prompt
                 if hasattr(self.llm_provider, 'set_system_prompt'):
@@ -1370,6 +1377,67 @@ class Bridge(QObject):
         if answer_checker_window:
             answer_checker_window.show_error_message(error_message)
         QTimer.singleShot(0, lambda: showInfo(error_message))
+
+    def update_config(self, new_settings):
+        """Update bridge configuration with new settings"""
+        try:
+            self.settings = new_settings
+            
+            # Update provider based on new settings
+            provider_type = new_settings.get("providerType", "openai")
+            
+            # API 키 마스킹 처리
+            def mask_key(key):
+                return f"****...{key[-4:]}" if key and len(key) > 4 else "[키 없음]"
+                
+            openai_key = new_settings.get("openaiApiKey", "")
+            gemini_key = new_settings.get("geminiApiKey", "")
+            
+            logger.debug(f"""
+=== 설정 업데이트 ===
+• 제공자: {provider_type}
+• OpenAI 키: {mask_key(openai_key)}
+• Gemini 키: {mask_key(gemini_key)}
+• Temperature: {new_settings.get("temperature", 0.7)}
+==================
+""")
+            
+            if provider_type == "openai":
+                if not openai_key:
+                    raise InvalidAPIKeyError("OpenAI API 키가 설정되지 않았습니다.")
+                self.llm_provider = OpenAIProvider(
+                    api_key=openai_key,
+                    base_url=new_settings.get("baseUrl", "https://api.openai.com"),
+                    model=new_settings.get("modelName", "gpt-4o-mini"),
+                    temperature=float(new_settings.get("temperature", 0.7))
+                )
+            else:
+                if not gemini_key:
+                    raise InvalidAPIKeyError("Gemini API 키가 설정되지 않았습니다.")
+                self.llm_provider = GeminiProvider(
+                    api_key=gemini_key,
+                    model_name=new_settings.get("geminiModel", "gemini-2.0-flash-exp"),
+                    temperature=float(new_settings.get("temperature", 0.7))
+                )
+            
+            # Clear conversation history for fresh start
+            self.clear_conversation_history()
+            
+            # Update thresholds
+            self.easy_threshold = int(new_settings.get("easyThreshold", 5))
+            self.good_threshold = int(new_settings.get("goodThreshold", 40))
+            self.hard_threshold = int(new_settings.get("hardThreshold", 60))
+            
+            # Update system prompt
+            self.system_prompt = new_settings.get("systemPrompt", "You are a helpful assistant.")
+            if hasattr(self.llm_provider, 'set_system_prompt'):
+                self.llm_provider.set_system_prompt(self.system_prompt)
+                
+            logger.info(f"설정이 성공적으로 업데이트되었습니다. (제공자: {provider_type})")
+            
+        except Exception as e:
+            logger.error(f"설정 업데이트 중 오류 발생: {str(e)}")
+            raise
 
 logger.info("Bridge initialized")
 

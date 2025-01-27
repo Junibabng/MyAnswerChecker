@@ -87,32 +87,67 @@ def setup_webchannel(bridge, web):
         logger.exception("Error setting up QWebChannel: %s", e)
         message_manager.handle_response_error("Error setting up QWebChannel", str(e))
 
+def initialize_addon():
+    """Initialize the addon"""
+    global bridge
+    try:
+        # 설정 로드
+        settings = settings_manager.load_settings()
+        mw.llm_addon_settings = settings
+        
+        # 브릿지 초기화
+        if bridge is None:
+            bridge = Bridge()
+            
+        logger.info("Addon initialized successfully")
+    except Exception as e:
+        logger.exception("Error initializing addon: %s", e)
+        raise
+
 def add_menu():
-    # "Tools" menu
-    tools_menu = None
-    for action in mw.form.menubar.actions():
-        if action.text() == "&Tools":
-            tools_menu = action.menu()
-            break
+    """Add menu items to Anki"""
+    try:
+        # 기존 메뉴 확인
+        tools_menu = None
+        answer_checker_menu = None
+        
+        for action in mw.form.menubar.actions():
+            if action.text() == "&Tools":
+                tools_menu = action.menu()
+                # 기존 Answer Checker 메뉴 찾기
+                for menu_action in tools_menu.actions():
+                    if menu_action.text() == "Answer Checker":
+                        answer_checker_menu = menu_action.menu()
+                        break
+                break
 
-    # Exit if "Tools" menu is not found
-    if tools_menu is None:
-        print("Error: Tools menu not found.")
-        return
+        if tools_menu is None:
+            logger.error("Tools menu not found")
+            return
+            
+        # 이미 메뉴가 있으면 제거
+        if answer_checker_menu is not None:
+            tools_menu.removeAction(answer_checker_menu.menuAction())
 
-    # Create "Answer Checker" menu
-    answer_checker_menu = QMenu("Answer Checker", tools_menu)
-    tools_menu.addMenu(answer_checker_menu)
+        # 새 메뉴 생성
+        answer_checker_menu = QMenu("Answer Checker", tools_menu)
+        tools_menu.addMenu(answer_checker_menu)
 
-    # Create "Open" action
-    open_action = QAction("Open Answer Checker", answer_checker_menu)
-    open_action.triggered.connect(lambda: open_answer_checker_window(bridge))
-    answer_checker_menu.addAction(open_action)
+        # 메뉴 항목 추가
+        menu_items = [
+            ("Open Answer Checker", open_answer_checker_window),
+            ("Settings", openSettingsDialog)
+        ]
 
-    # Create "Settings" action
-    settings_action = QAction("Settings", answer_checker_menu)
-    settings_action.triggered.connect(openSettingsDialog)
-    answer_checker_menu.addAction(settings_action)
+        for label, callback in menu_items:
+            action = QAction(label, answer_checker_menu)
+            action.triggered.connect(callback)
+            answer_checker_menu.addAction(action)
+            
+        logger.debug("Menu items added successfully")
+    except Exception as e:
+        logger.error(f"Error adding menu items: {str(e)}")
+        raise
 
 def open_answer_checker_window():
     """Opens the answer checker window"""
@@ -197,6 +232,8 @@ def load_global_settings():
     
     logger.debug("Global settings loaded")
 
+from .settings_manager import settings_manager
+
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -204,8 +241,6 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(400)
 
         self.layout = QVBoxLayout(self)
-
-        # Create tab widget
         self.tabWidget = QTabWidget()
         
         # API Settings Tab
@@ -308,9 +343,8 @@ class SettingsDialog(QDialog):
         
         self.debugGroup.setLayout(debugLayout)
         generalLayout.addWidget(self.debugGroup)
-        self.generalTab.setLayout(generalLayout)
 
-        # 시스템 프롬프트 설정 그룹
+        # System Prompt Settings
         systemPromptGroup = QGroupBox("System Prompt Settings")
         systemPromptLayout = QVBoxLayout()
         
@@ -321,8 +355,9 @@ class SettingsDialog(QDialog):
         
         systemPromptGroup.setLayout(systemPromptLayout)
         generalLayout.addWidget(systemPromptGroup)
+        self.generalTab.setLayout(generalLayout)
 
-        # Add tabs to tab widget
+        # Add tabs
         self.tabWidget.addTab(self.apiTab, "API Settings")
         self.tabWidget.addTab(self.difficultyTab, "Difficulty")
         self.tabWidget.addTab(self.generalTab, "General")
@@ -351,85 +386,55 @@ class SettingsDialog(QDialog):
 
     def loadSettings(self):
         """Loads settings into UI"""
-        settings = QSettings("LLM_response_evaluator", "Settings")
+        settings = settings_manager.load_settings()
         
         # API provider settings
-        provider = settings.value("providerType", "openai")
+        provider = settings.get("providerType", "openai")
         self.providerCombo.setCurrentText(provider.capitalize())
         
         # OpenAI settings
-        self.openaiKeyEdit.setText(settings.value("openaiApiKey", ""))
-        self.baseUrlEdit.setText(settings.value("baseUrl", "https://api.openai.com"))
-        self.modelEdit.setText(settings.value("modelName", "gpt-4o-mini"))
+        self.openaiKeyEdit.setText(settings.get("openaiApiKey", ""))
+        self.baseUrlEdit.setText(settings.get("baseUrl", "https://api.openai.com"))
+        self.modelEdit.setText(settings.get("modelName", "gpt-4o-mini"))
         
         # Gemini settings
-        self.geminiKeyEdit.setText(settings.value("geminiApiKey", ""))
-        self.geminiModelEdit.setText(settings.value("geminiModel", "gemini-2.0-flash-exp"))
+        self.geminiKeyEdit.setText(settings.get("geminiApiKey", ""))
+        self.geminiModelEdit.setText(settings.get("geminiModel", "gemini-2.0-flash-exp"))
         
         # Other settings
-        self.easyThresholdEdit.setValue(int(settings.value("easyThreshold", "5")))
-        self.goodThresholdEdit.setValue(int(settings.value("goodThreshold", "40")))
-        self.hardThresholdEdit.setValue(int(settings.value("hardThreshold", "60")))
-        self.temperatureEdit.setValue(float(settings.value("temperature", "0.7")))
+        self.easyThresholdEdit.setValue(int(settings.get("easyThreshold", 5)))
+        self.goodThresholdEdit.setValue(int(settings.get("goodThreshold", 40)))
+        self.hardThresholdEdit.setValue(int(settings.get("hardThreshold", 60)))
+        self.temperatureEdit.setValue(float(settings.get("temperature", 0.7)))
         
-        # Load debug settings
-        self.debugLoggingCheckbox.setChecked(settings.value("debug_logging", False, type=bool))
-
-        # Load system prompt (remove language setting)
-        self.systemPromptEdit.setText(settings.value("systemPrompt", "You are a helpful assistant."))
+        # Debug settings
+        self.debugLoggingCheckbox.setChecked(settings.get("debug_logging", False))
+        
+        # System prompt
+        self.systemPromptEdit.setText(settings.get("systemPrompt", "You are a helpful assistant."))
 
     def saveSettings(self):
         """Saves settings"""
-        settings = QSettings("LLM_response_evaluator", "Settings")
+        settings = {
+            "providerType": self.providerCombo.currentText().lower(),
+            "openaiApiKey": self.openaiKeyEdit.text(),
+            "baseUrl": self.baseUrlEdit.text(),
+            "modelName": self.modelEdit.text(),
+            "geminiApiKey": self.geminiKeyEdit.text(),
+            "geminiModel": self.geminiModelEdit.text(),
+            "easyThreshold": self.easyThresholdEdit.value(),
+            "goodThreshold": self.goodThresholdEdit.value(),
+            "hardThreshold": self.hardThresholdEdit.value(),
+            "temperature": self.temperatureEdit.value(),
+            "systemPrompt": self.systemPromptEdit.text(),
+            "debug_logging": self.debugLoggingCheckbox.isChecked()
+        }
         
-        # API provider settings
-        provider_type = self.providerCombo.currentText().lower()
-        settings.setValue("providerType", provider_type)
-        
-        # OpenAI settings (키 이름 수정)
-        settings.setValue("openaiApiKey", self.openaiKeyEdit.text())  # 기존 "apiKey" -> "openaiApiKey"로 변경
-        settings.setValue("baseUrl", self.baseUrlEdit.text())
-        settings.setValue("modelName", self.modelEdit.text())
-        
-        # Gemini settings (키 이름 수정)
-        settings.setValue("geminiApiKey", self.geminiKeyEdit.text())  # 추가
-        settings.setValue("geminiModel", self.geminiModelEdit.text())  # 추가
-        
-        # Other settings
-        settings.setValue("easyThreshold", str(self.easyThresholdEdit.value()))
-        settings.setValue("goodThreshold", str(self.goodThresholdEdit.value()))
-        settings.setValue("hardThreshold", str(self.hardThresholdEdit.value()))
-        settings.setValue("temperature", str(self.temperatureEdit.value()))
-        
-        # Save system prompt instead of language
-        settings.setValue("systemPrompt", self.systemPromptEdit.text())
-        
-        # Remove language setting
-        settings.remove("language")
-        
-        # Save debug settings
-        settings.setValue("debug_logging", self.debugLoggingCheckbox.isChecked())
-        
-        # Update logging level
-        if self.debugLoggingCheckbox.isChecked():
-            logger.setLevel(logging.DEBUG)
+        if settings_manager.save_settings(settings):
+            showInfo("Settings saved successfully.")
+            self.accept()
         else:
-            logger.setLevel(logging.INFO)
-
-        # Update Bridge's LLM provider
-        if bridge:
-            try:
-                bridge.update_llm_provider()
-                # 설정 변경 후 대화 기록 초기화 추가
-                bridge.clear_conversation_history()
-                if answer_checker_window:
-                    answer_checker_window.clear_chat()
-            except Exception as e:
-                showInfo(f"모델 변경 중 오류 발생: {str(e)}")
-
-        load_global_settings()
-        showInfo("Settings saved successfully.")
-        self.accept()
+            showInfo("Failed to save settings. Please try again.")
 
 # Function to open settings dialog
 def openSettingsDialog():
