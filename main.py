@@ -386,14 +386,14 @@ class SettingsDialog(QDialog):
         provider_type = self.providerCombo.currentText().lower()
         settings.setValue("providerType", provider_type)
         
-        # OpenAI settings
-        settings.setValue("openaiApiKey", self.openaiKeyEdit.text())
+        # OpenAI settings (키 이름 수정)
+        settings.setValue("openaiApiKey", self.openaiKeyEdit.text())  # 기존 "apiKey" -> "openaiApiKey"로 변경
         settings.setValue("baseUrl", self.baseUrlEdit.text())
         settings.setValue("modelName", self.modelEdit.text())
         
-        # Gemini settings
-        settings.setValue("geminiApiKey", self.geminiKeyEdit.text())
-        settings.setValue("geminiModel", self.geminiModelEdit.text())
+        # Gemini settings (키 이름 수정)
+        settings.setValue("geminiApiKey", self.geminiKeyEdit.text())  # 추가
+        settings.setValue("geminiModel", self.geminiModelEdit.text())  # 추가
         
         # Other settings
         settings.setValue("easyThreshold", str(self.easyThresholdEdit.value()))
@@ -418,7 +418,14 @@ class SettingsDialog(QDialog):
 
         # Update Bridge's LLM provider
         if bridge:
-            bridge.update_llm_provider()
+            try:
+                bridge.update_llm_provider()
+                # 설정 변경 후 대화 기록 초기화 추가
+                bridge.clear_conversation_history()
+                if answer_checker_window:
+                    answer_checker_window.clear_chat()
+            except Exception as e:
+                showInfo(f"모델 변경 중 오류 발생: {str(e)}")
 
         load_global_settings()
         showInfo("Settings saved successfully.")

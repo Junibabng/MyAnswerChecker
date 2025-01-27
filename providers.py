@@ -6,6 +6,7 @@ import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime
 import random
+import re
 
 # Logging setup
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -230,10 +231,17 @@ class LLMProvider(ABC):
             if url is None:
                 url = f"{self.base_url}/v1/chat/completions"
             
+            # API 키 마스킹 처리
+            masked_headers = headers.copy()
+            if 'Authorization' in masked_headers:
+                masked_headers['Authorization'] = re.sub(r' (sk-).*', r' \1****', masked_headers['Authorization'])
+            
+            masked_url = re.sub(r'(key=)([^&]+)', r'\1****', url)
+            
             logger.debug(
                 "API 요청 시작:\n"
-                f"URL: {url}\n"
-                f"Headers: {headers}\n"
+                f"URL: {masked_url}\n"
+                f"Headers: {masked_headers}\n"
                 f"Data: {data}"
             )
                 
@@ -350,9 +358,12 @@ class OpenAIProvider(LLMProvider):
                 "temperature": temperature
             }
 
+            # URL 마스킹 처리
+            masked_url = re.sub(r'(key=)([^&]+)', r'\1****', url) if 'key=' in url else url
+            
             logger.debug(
                 "응답 생성 시작:\n"
-                f"Model: {self.model_name}\n"
+                f"Model: {self.model_name} (Endpoint: {masked_url})\n"
                 f"Temperature: {temperature}\n"
                 f"Message Count: {len(messages)}"
             )
@@ -507,9 +518,12 @@ class GeminiProvider(LLMProvider):
                 ]
             }
 
+            # URL 마스킹 처리
+            masked_url = re.sub(r'(key=)([^&]+)', r'\1****', url) if 'key=' in url else url
+            
             logger.debug(
                 "응답 생성 시작:\n"
-                f"URL: {url}\n"
+                f"URL: {masked_url}\n"
                 f"Temperature: {temperature}\n"
                 f"Message Count: {len(messages)}"
             )

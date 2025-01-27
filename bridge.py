@@ -174,6 +174,7 @@ class Bridge(QObject):
         self._setup_timer()
         self.update_llm_provider()
         self.partial_response = ""
+        self.system_prompt = "You are a helpful assistant."  # system_prompt 속성 초기화
 
     def _initialize_attributes(self):
         """Initialize all instance attributes"""
@@ -389,56 +390,50 @@ class Bridge(QObject):
     def update_llm_provider(self):
         """Update LLM provider with current settings"""
         settings = QSettings("LLM_response_evaluator", "Settings")
-        provider_type = settings.value("providerType", "openai")
+        provider_type = settings.value("providerType", "openai").lower()
         
-        # 이전 설정 저장
-        old_provider = type(self.llm_provider).__name__ if self.llm_provider else None
-        old_model = self.llm_provider.model_name if self.llm_provider else None
-        old_temperature = self.temperature if hasattr(self, 'temperature') else None
-        old_system_prompt = self.system_prompt if hasattr(self, 'system_prompt') else None
-        
-        # 새로운 설정 로드
-        self.temperature = float(settings.value("temperature", "0.2"))
+        # 시스템 프롬프트 설정 업데이트
         self.system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
+        
+        # API 키 마스킹 개선
+        def mask_key(key):
+            return f"****...{key[-4:]}" if key and len(key) > 4 else "[키 없음]"  # 키 없을 경우 명시적 표시
+            
+        openai_key = settings.value("openaiApiKey", "")
+        gemini_key = settings.value("geminiApiKey", "")
+        
+        logger.debug(f"""
+=== LLM 프로바이더 업데이트 ===
+• 현재 제공자: {provider_type}
+• OpenAI 키: {mask_key(openai_key)}
+• Gemini 키: {mask_key(gemini_key)}
+• 시스템 프롬프트: {self.system_prompt[:50]}...  # 프롬프트 축약 표시
+=============================
+""")
         
         try:
             if provider_type == "openai":
-                api_key = settings.value("openaiApiKey", "")
+                # OpenAI 설정 값 이름 수정
+                api_key = settings.value("openaiApiKey", "")  # "apiKey" -> "openaiApiKey"
                 base_url = settings.value("baseUrl", "https://api.openai.com")
                 model_name = settings.value("modelName", "gpt-4o-mini")
                 self.llm_provider = OpenAIProvider(api_key, base_url, model_name)
             elif provider_type == "gemini":
-                api_key = settings.value("geminiApiKey", "")
-                model_name = settings.value("geminiModel", "gemini-2.0-flash-exp")
+                # Gemini 설정 값 이름 수정
+                api_key = settings.value("geminiApiKey", "")  # 추가
+                model_name = settings.value("geminiModel", "gemini-2.0-flash-exp")  # 추가
                 self.llm_provider = GeminiProvider(api_key, model_name)
             
-            # 프로바이더에 시스템 프롬프트 설정
+            # 시스템 프롬프트 강제 업데이트
+            current_system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
             if hasattr(self.llm_provider, 'set_system_prompt'):
-                self.llm_provider.set_system_prompt(self.system_prompt)
+                self.llm_provider.set_system_prompt(current_system_prompt)
             
-            # 설정이 변경되었는지 확인
-            if (old_provider != type(self.llm_provider).__name__ or
-                old_model != self.llm_provider.model_name or
-                old_temperature != self.temperature or
-                old_system_prompt != self.system_prompt):
-                logger.debug(f"""
-Model settings changed:
-- Provider: {old_provider} -> {type(self.llm_provider).__name__}
-- Model: {old_model} -> {self.llm_provider.model_name}
-- Temperature: {old_temperature} -> {self.temperature}
-- System Prompt: {old_system_prompt} -> {self.system_prompt}
-""")
-                # UI 업데이트 시그널 발생
-                self.model_info_changed.emit()
-                
-                # 대화 기록 초기화
-                self.clear_conversation_history()
+            logger.info(f"LLM Provider changed to {provider_type}")
             
         except Exception as e:
-            logger.exception("Error updating LLM provider: %s", e)
-            showInfo(f"Error updating LLM provider: {str(e)}")
-
-        return True
+            logger.error(f"Error updating LLM provider: {str(e)}")
+            self._show_error_message(f"모델 변경 실패: {str(e)}")
 
     def call_llm_api(self, system_message, user_message_content, max_retries=3):
         """Calls the selected LLM API to get a response."""
