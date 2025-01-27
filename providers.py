@@ -358,6 +358,8 @@ class OpenAIProvider(LLMProvider):
                 "temperature": temperature
             }
 
+            # URL 생성 부분 추가
+            url = f"{self.base_url}/v1/chat/completions"
             # URL 마스킹 처리
             masked_url = re.sub(r'(key=)([^&]+)', r'\1****', url) if 'key=' in url else url
             
@@ -368,7 +370,7 @@ class OpenAIProvider(LLMProvider):
                 f"Message Count: {len(messages)}"
             )
 
-            result = self._make_api_request(headers, payload)
+            result = self._make_api_request(headers, payload, url)  # url 인자 추가
             
             if not result.get('choices'):
                 logger.error(f"응답에 choices 필드 없음: {result}")

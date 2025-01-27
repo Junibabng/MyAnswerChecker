@@ -413,8 +413,8 @@ class Bridge(QObject):
         
         try:
             if provider_type == "openai":
-                # OpenAI 설정 값 이름 수정
-                api_key = settings.value("openaiApiKey", "")  # "apiKey" -> "openaiApiKey"
+                # OpenAI 설정 값 읽기
+                api_key = settings.value("openaiApiKey", "")
                 base_url = settings.value("baseUrl", "https://api.openai.com")
                 model_name = settings.value("modelName", "gpt-4o-mini")
                 self.llm_provider = OpenAIProvider(api_key, base_url, model_name)
