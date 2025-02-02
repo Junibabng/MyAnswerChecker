@@ -51,10 +51,11 @@ if not logger.handlers:
 
 logger.info("Addon load start")
 
-# Global bridge object
+# Global objects
 bridge = None
 answer_checker_window = None
 message_manager = MessageManager()
+chat_service = None
 
 # Constants for difficulty levels
 DIFFICULTY_AGAIN = "Again"
@@ -89,11 +90,15 @@ def setup_webchannel(bridge, web):
 
 def initialize_addon():
     """Initialize the addon"""
-    global bridge
+    global bridge, chat_service
     try:
         # 설정 로드
         settings = settings_manager.load_settings()
         mw.llm_addon_settings = settings
+        
+        # Instantiate chat_service using provider factory
+        from services.chat_service import ChatService
+        chat_service = ChatService(settings)
         
         # 브릿지 초기화
         if bridge is None:
