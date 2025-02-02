@@ -167,8 +167,6 @@ class Bridge(QObject):
     # Signal definitions
     sendResponse = pyqtSignal(str)
     sendQuestionResponse = pyqtSignal(str)
-    sendJokeResponse = pyqtSignal(str)
-    sendEditAdviceResponse = pyqtSignal(str)
     timer_signal = pyqtSignal(str)
     stream_data_received = pyqtSignal(str, str, str)
     model_info_changed = pyqtSignal()
@@ -913,98 +911,6 @@ class Bridge(QObject):
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(str, error_json)
             )
-
-    def process_joke_request(self, card_content, card_answers):
-        """Handles a joke generation request."""
-        def thread_func():
-            try:
-                # 사용자 요청을 대화 기록에 추가
-                self.conversation_history['messages'].append({
-                    'role': 'user',
-                    'content': "Please tell me a joke about this card!"
-                })
-
-                system_message, user_message_content = self.create_llm_message(
-                    card_content, 
-                    card_answers, 
-                    None, 
-                    "joke"
-                )
-                
-                response = self.call_llm_api(system_message, user_message_content)
-                
-                # LLM 응응답을 대화 기록에 추가
-                self.conversation_history['messages'].append({
-                    'role': 'assistant',
-                    'content': f"Joke: {response}"
-                })
-
-                response_json = json.dumps({"joke": response})
-                
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendJokeResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, response_json)
-                )
-            except Exception as e:
-                logger.exception("Error generating joke: %s", e)
-                error_json = json.dumps({"error": str(e)})
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendJokeResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, error_json)
-                )
-
-        thread = threading.Thread(target=thread_func)
-        thread.start()
-
-    def process_edit_advice_request(self, card_content, card_answers):
-        """Handles a card edit advice request."""
-        def thread_func():
-            try:
-                # 사용자 요청을 대화 기록에 추가
-                self.conversation_history['messages'].append({
-                    'role': 'user',
-                    'content': "Please provide advice for improving this card."
-                })
-
-                system_message, user_message_content = self.create_llm_message(
-                    card_content, 
-                    card_answers, 
-                    None, 
-                    "edit_advice"
-                )
-                
-                response = self.call_llm_api(system_message, user_message_content)
-                
-                # LLM 응답을 대화 기록에 추가
-                self.conversation_history['messages'].append({
-                    'role': 'assistant',
-                    'content': f"Edit Advice: {response}"
-                })
-
-                response_json = json.dumps({"edit_advice": response})
-                
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendEditAdviceResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, response_json)
-                )
-            except Exception as e:
-                logger.exception("Error generating card edit advice: %s", e)
-                error_json = json.dumps({"error": str(e)})
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendEditAdviceResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, error_json)
-                )
-
-        thread = threading.Thread(target=thread_func)
-        thread.start()
 
     def extract_json_from_text(self, text):
         """Extracts the last JSON part from the text."""

@@ -77,8 +77,6 @@ class AnswerCheckerWindow(QDialog):
         
         self.bridge.sendResponse.connect(self.display_response)
         self.bridge.sendQuestionResponse.connect(self.display_question_response)
-        self.bridge.sendJokeResponse.connect(self.display_joke)
-        self.bridge.sendEditAdviceResponse.connect(self.display_edit_advice)
         self.bridge.timer_signal.connect(self.update_timer_display)
         self.bridge.stream_data_received.connect(self.bridge.update_response_chunk)
         
@@ -634,22 +632,6 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
                 
         except Exception as e:
             self.handle_response_error("추가 질문 처리 중 오류", str(e))
-
-    def display_joke(self):
-        """Requests and displays a joke."""
-        pass
-
-    def display_edit_advice(self):
-        """Requests and displays card edit advice."""
-        pass
-
-    def show_joke(self):
-        """Requests and displays a joke."""
-        pass
-
-    def show_edit_advice(self):
-        """Requests and displays card edit advice."""
-        pass
 
     def markdown_to_html(self, text):
         """Converts Markdown-style emphasis and line breaks to HTML tags."""
