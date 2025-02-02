@@ -28,11 +28,9 @@ import traceback
 from .message import MessageType, Message
 from .settings_manager import settings_manager
 from .providers.provider_factory import get_provider
+from aqt.qt import QSettings
 
 # Logging setup
-import logging
-import os
-
 addon_dir = os.path.dirname(os.path.abspath(__file__))
 log_file_path = os.path.join(addon_dir, 'MyAnswerChecker_debug.log')
 os.makedirs(addon_dir, exist_ok=True)
@@ -401,39 +399,35 @@ class Bridge(QObject):
             logger.debug(f"Response incomplete: {str(e)}")
             return False
 
-    def update_llm_provider(self):
-        """Update LLM provider with current settings"""
-        settings = settings_manager.load_settings()
+    def update_llm_provider(self, settings=None):
+        """Update LLM provider with the given or current settings"""
+        if settings is None:
+            settings = settings_manager.load_settings()
         provider_type = settings.get("providerType", "openai").lower()
-        
-        # 시스템 프롬프트 설정 업데이트
+
         self.system_prompt = settings.get("systemPrompt", "You are a helpful assistant.")
-        
-        # API 키 마스킹 개선
+
         def mask_key(key):
             return f"****...{key[-4:]}" if key and len(key) > 4 else "[키 없음]"
-            
+
         openai_key = settings.get("openaiApiKey", "")
         gemini_key = settings.get("geminiApiKey", "")
-        
-        logger.debug(f"""
-=== LLM 프로바이더 업데이트 ===
+
+        logger.debug(f"""=== LLM 프로바이더 업데이트 ===
 • 현재 제공자: {provider_type}
 • OpenAI 키: {mask_key(openai_key)}
 • Gemini 키: {mask_key(gemini_key)}
 • 시스템 프롬프트: {self.system_prompt[:50]}...
-=============================
-""")
-        
+=============================""")
+
         try:
             self.llm_provider = get_provider(settings)
-            
-            # 시스템 프롬프트 강제 업데이트
+
             if hasattr(self.llm_provider, 'set_system_prompt'):
                 self.llm_provider.set_system_prompt(self.system_prompt)
-            
+
             logger.info(f"LLM Provider changed to {provider_type}")
-            
+
         except Exception as e:
             logger.error(f"Error updating LLM provider: {str(e)}")
             self._show_error_message(f"모델 변경 실패: {str(e)}")
@@ -1370,43 +1364,20 @@ class Bridge(QObject):
     def update_config(self, new_settings):
         """Update bridge configuration with new settings"""
         try:
-            self.settings = new_settings
-            
-            # Update provider based on new settings
-            provider_type = new_settings.get("providerType", "openai")
-            
-            # API 키 마스킹 처리
-            def mask_key(key):
-                return f"****...{key[-4:]}" if key and len(key) > 4 else "[키 없음]"
-                
-            openai_key = new_settings.get("openaiApiKey", "")
-            gemini_key = new_settings.get("geminiApiKey", "")
-            
-            logger.debug(f"""
-=== 설정 업데이트 ===
-• 제공자: {provider_type}
-• OpenAI 키: {mask_key(openai_key)}
-• Gemini 키: {mask_key(gemini_key)}
-• Temperature: {new_settings.get("temperature", 0.7)}
-==================
-""")
-            
-            self.llm_provider = get_provider(new_settings)
-            
-            # Clear conversation history for fresh start
-            self.clear_conversation_history()
-            
             # Update thresholds
             self.easy_threshold = int(new_settings.get("easyThreshold", 5))
             self.good_threshold = int(new_settings.get("goodThreshold", 40))
             self.hard_threshold = int(new_settings.get("hardThreshold", 60))
             
-            # Update system prompt
             self.system_prompt = new_settings.get("systemPrompt", "You are a helpful assistant.")
-            if hasattr(self.llm_provider, 'set_system_prompt'):
-                self.llm_provider.set_system_prompt(self.system_prompt)
-                
-            logger.info(f"설정이 성공적으로 업데이트되었습니다. (제공자: {provider_type})")
+            
+            # Update the LLM provider using the new settings
+            self.update_llm_provider(new_settings)
+            
+            # Clear conversation history for fresh start
+            self.clear_conversation_history()
+            
+            logger.info(f"설정이 성공적으로 업데이트되었습니다. (제공자: {new_settings.get('providerType', 'openai')})")
             
         except Exception as e:
             logger.error(f"설정 업데이트 중 오류 발생: {str(e)}")
