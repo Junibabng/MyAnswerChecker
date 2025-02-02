@@ -27,6 +27,7 @@ from .providers import LLMProvider, OpenAIProvider, GeminiProvider
 import traceback
 from .message import MessageType, Message
 from .settings_manager import settings_manager
+from .providers.provider_factory import get_provider
 
 # Logging setup
 import logging
@@ -425,19 +426,7 @@ class Bridge(QObject):
 """)
         
         try:
-            if provider_type == "openai":
-                self.llm_provider = OpenAIProvider(
-                    api_key=settings.get("openaiApiKey", ""),
-                    base_url=settings.get("baseUrl", "https://api.openai.com"),
-                    model=settings.get("modelName", "gpt-4o-mini"),
-                    temperature=float(settings.get("temperature", 0.7))
-                )
-            else:
-                self.llm_provider = GeminiProvider(
-                    api_key=settings.get("geminiApiKey", ""),
-                    model_name=settings.get("geminiModel", "gemini-2.0-flash-exp"),
-                    temperature=float(settings.get("temperature", 0.7))
-                )
+            self.llm_provider = get_provider(settings)
             
             # 시스템 프롬프트 강제 업데이트
             if hasattr(self.llm_provider, 'set_system_prompt'):
@@ -1402,23 +1391,7 @@ class Bridge(QObject):
 ==================
 """)
             
-            if provider_type == "openai":
-                if not openai_key:
-                    raise InvalidAPIKeyError("OpenAI API 키가 설정되지 않았습니다.")
-                self.llm_provider = OpenAIProvider(
-                    api_key=openai_key,
-                    base_url=new_settings.get("baseUrl", "https://api.openai.com"),
-                    model=new_settings.get("modelName", "gpt-4o-mini"),
-                    temperature=float(new_settings.get("temperature", 0.7))
-                )
-            else:
-                if not gemini_key:
-                    raise InvalidAPIKeyError("Gemini API 키가 설정되지 않았습니다.")
-                self.llm_provider = GeminiProvider(
-                    api_key=gemini_key,
-                    model_name=new_settings.get("geminiModel", "gemini-2.0-flash-exp"),
-                    temperature=float(new_settings.get("temperature", 0.7))
-                )
+            self.llm_provider = get_provider(new_settings)
             
             # Clear conversation history for fresh start
             self.clear_conversation_history()

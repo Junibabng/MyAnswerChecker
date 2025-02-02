@@ -1,5 +1,5 @@
 import logging
-from providers.base import OpenAIProvider, GeminiProvider
+from .base import OpenAIProvider, GeminiProvider
 
 logger = logging.getLogger(__name__)
 
