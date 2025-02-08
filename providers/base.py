@@ -245,7 +245,7 @@ class LLMProvider(ABC):
                 f"Data: {data}"
             )
                 
-            response = requests.post(url, headers=headers, json=data, timeout=30)
+            response = requests.post(url, headers=headers, json=data, timeout=60)
             
             logger.debug(
                 "API 응답 수신:\n"
@@ -279,7 +279,7 @@ class LLMProvider(ABC):
             return response_json
             
         except requests.exceptions.Timeout as e:
-            log_error(e, {'url': url, 'timeout': 30})
+            log_error(e, {'url': url, 'timeout': 60})
             raise APIConnectionError("요청 시간이 초과되었습니다.")
         except requests.exceptions.ConnectionError as e:
             log_error(e, {'url': url})
