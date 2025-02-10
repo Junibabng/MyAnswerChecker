@@ -7,6 +7,7 @@ from .bridge import Bridge
 from .answer_checker_window import AnswerCheckerWindow
 from .main import add_menu, openSettingsDialog, initialize_addon, load_global_settings
 from .settings_manager import settings_manager
+from .auto_difficulty import extract_difficulty
 
 # Global instances
 bridge = None

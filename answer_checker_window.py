@@ -19,6 +19,8 @@ import threading
 import uuid  # UUID 추가
 from .message import MessageManager, Message, MessageType
 from typing import Optional
+from .settings_manager import settings_manager
+from .auto_difficulty import extract_difficulty
 
 logger = logging.getLogger(__name__)
 
@@ -463,17 +465,17 @@ Card ID: {card.id}
 Ease: {ease}
 Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
-            
-            # 난이도 메시지를 설정 (큐에 추가하지 않음)
             if self.last_difficulty_message:
                 self.message_queue = [self.last_difficulty_message]  # 큐를 새로 생성하고 마지막 메시지만 포함
                 logger.debug("Difficulty message set for next card")
-            
-            # 대화 기록 초기화
-            self.bridge.clear_conversation_history()
-            self.clear_chat()
+            # Clear conversation only if this is the initial answer
+            if self.is_initial_answer:
+                self.bridge.clear_conversation_history()
+                self.clear_chat()
+            # Always clear the input field and set focus
             self.input_field.clear()
             self.input_field.setFocus()
+            # Reset is_initial_answer to True for next card if it was the initial answer, else keep the conversation
             self.is_initial_answer = True
 
     def closeEvent(self, event):
@@ -529,7 +531,7 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
             return json_str
 
     def display_response(self, response_json):
-        """Displays the LLM response in the webview."""
+        """Displays the LLM response in the webview as plain text."""
         if not self._check_webview_state():
             logger.debug("Queuing response for later display")
             self._saved_messages.append({"type": "response", "content": response_json})
@@ -537,101 +539,75 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
 
         try:
             self.display_loading_animation(False)
-            processed_json = self._preprocess_json_string(response_json)
             
+            # JSON 객체 찾기
+            json_match = re.search(r'({[^{}]*"recommendation"[^{}]*})', response_json)
+            if not json_match:
+                logger.error("No JSON object found in response")
+                self.show_error_message("응답 형식이 올바르지 않습니다.")
+                return
+
             try:
-                response = json.loads(processed_json)
+                json_str = json_match.group(1)
+                parsed_json = json.loads(json_str)
             except json.JSONDecodeError:
-                # JSON 파싱 실패 시 정규식으로 JSON 부분 추출 시도
-                import re
-                json_pattern = r'\{[^}]+\}'
-                match = re.search(json_pattern, processed_json)
-                if match:
-                    response = json.loads(match.group(0))
-                else:
-                    raise
+                logger.error("Invalid JSON format")
+                self.show_error_message("응답을 처리할 수 없습니다.")
+                return
+
+            # 응답 텍스트에서 JSON 부분 제거
+            display_text = response_json.replace(json_str, "").strip()
             
-            evaluation = response.get("evaluation", "No evaluation")
-            recommendation = response.get("recommendation", "No recommendation")
-            answer = response.get("answer", "")
-            reference = response.get("reference", "")
+            # JSON 부분이 제거된 텍스트가 있으면 마크다운 변환
+            if display_text:
+                processed_content = self.markdown_to_html(display_text)
+            else:
+                processed_content = "평가가 완료되었습니다."
+
             self.last_response = response_json
 
-            # 현재 모델 정보 가져오기
-            settings = QSettings("LLM_response_evaluator", "Settings")
-            provider_type = settings.value("providerType", "openai").lower()
+            settings = settings_manager.load_settings()
+            provider_type = settings.get("providerType", "openai").lower()
             if provider_type == "openai":
-                model_name = settings.value("modelName", "Unknown Model")
-            else:  # gemini
-                model_name = settings.value("geminiModel", "Unknown Model")
-            
-            # Message 객체 생성
+                model_name = settings.get("modelName", "Unknown Model")
+            else:
+                model_name = settings.get("geminiModel", "Unknown Model")
+
             response_message = self.message_manager.create_llm_message(
-                content=f"""
-                <h2>평가 결과</h2>
-                <div class="evaluation">{evaluation}</div>
-                <div class="recommendation {self.get_recommendation_class(recommendation)}">{recommendation}</div>
-                <div class="answer"><p style="white-space: pre-wrap;">{answer}</p></div>
-                <div class="reference"><p>{reference}</p></div>
-                """,
+                content=processed_content,
                 model_name=model_name
             )
             self.append_to_chat(response_message)
-            
         except Exception as e:
-            self.handle_response_error("JSON 파싱 오류", str(e))
+            self.handle_response_error("Display response error", str(e))
 
-    def display_question_response(self, response_json):
-        """Displays the response to an additional question."""
+    def display_question_response(self, response_text):
+        """Displays the response to an additional question as plain text."""
         if not self._check_webview_state():
             logger.debug("Queuing question response for later display")
-            self._saved_messages.append({"type": "question", "content": response_json})
+            self._saved_messages.append({"type": "question", "content": response_text})
             return
 
         self.display_loading_animation(False)
         try:
-            processed_json = self._preprocess_json_string(response_json)
-            
-            try:
-                response = json.loads(processed_json)
-            except json.JSONDecodeError:
-                # JSON 파싱 실패 시 정규식으로 JSON 부분 추출 시도
-                import re
-                json_pattern = r'\{[^}]+\}'
-                match = re.search(json_pattern, processed_json)
-                if match:
-                    response = json.loads(match.group(0))
-                else:
-                    raise
+            # Apply markdown conversion to preserve line breaks
+            processed_content = self.markdown_to_html(response_text)
+            self.last_response = response_text
 
-            if "error" in response:
-                error_message = self.message_manager.create_error_message(response['error'])
-                self.append_to_chat(error_message)
+            settings = settings_manager.load_settings()
+            provider_type = settings.get("providerType", "openai").lower()
+            if provider_type == "openai":
+                model_name = settings.get("modelName", "Unknown Model")
             else:
-                # 현재 모델 정보 가져오기
-                settings = QSettings("LLM_response_evaluator", "Settings")
-                provider_type = settings.value("providerType", "openai").lower()
-                if provider_type == "openai":
-                    model_name = settings.value("modelName", "Unknown Model")
-                else:  # gemini
-                    model_name = settings.value("geminiModel", "Unknown Model")
-                
-                recommendation = response.get("recommendation", "")
-                answer = response.get("answer", "답변 없음")
-                
-                # Message 객체 생성
-                answer_message = self.message_manager.create_llm_message(
-                    content=f"""
-                    <h3>추가 답변</h3>
-                    <span class="{self.get_recommendation_class(recommendation)}">{recommendation}</span>
-                    <p>{self.markdown_to_html(answer)}</p>
-                    """,
-                    model_name=model_name
-                )
-                self.append_to_chat(answer_message)
-                
+                model_name = settings.get("geminiModel", "Unknown Model")
+
+            answer_message = self.message_manager.create_llm_message(
+                content=processed_content,
+                model_name=model_name
+            )
+            self.append_to_chat(answer_message)
         except Exception as e:
-            self.handle_response_error("추가 질문 처리 중 오류", str(e))
+            self.handle_response_error("Display question response error", str(e))
 
     def markdown_to_html(self, text):
         """Converts Markdown-style emphasis and line breaks to HTML tags."""
@@ -781,67 +757,57 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
         error_message = self.message_manager.create_error_message(message)
         self.append_to_chat(error_message)
 
-    def follow_llm_suggestion(self):
-        """LLM의 추천에 따라 난이도 버튼을 클릭하고 UI에 표시합니다."""
+    def follow_llm_suggestion(self) -> None:
+        """LLM의 난이도 추천에 따라 자동으로 난이도를 평가합니다."""
         try:
-            logger.debug(f"""
-=== Follow LLM Suggestion Start ===
-Has last_response: {bool(self.last_response)}
-Current State: {mw.state}
-Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
-""")
-            if not self.last_response:
-                logger.error("No LLM response available")
+            logging.debug("난이도 평가 시작")
+            
+            # 마지막 LLM 응답 확인
+            last_response = self.bridge.get_last_response()
+            if not last_response:
+                logging.error("난이도 평가를 위한 LLM 응답이 없습니다.")
+                self._show_error_message("난이도 평가를 위한 LLM 응답이 없습니다.")
                 return
 
-            response = json.loads(self.last_response)
-            recommendation = response.get("recommendation", "").strip()
-            logger.debug(f"LLM recommendation: {recommendation}")
-
-            if recommendation not in ["Again", "Hard", "Good", "Easy"]:
-                logger.error(f"Unknown recommendation: {recommendation}")
+            # 난이도 추천 추출
+            recommendation = self.bridge.extract_difficulty(last_response)
+            if not recommendation:
+                logging.error("유효한 난이도 평가 결과를 찾을 수 없습니다.")
+                self._show_error_message("유효한 난이도 평가 결과를 찾을 수 없습니다.")
                 return
 
-            difficulty_map = {
+            # 유효한 난이도 값 확인
+            valid_recommendations = ["Again", "Hard", "Good", "Easy"]
+            if recommendation not in valid_recommendations:
+                logging.error(f"잘못된 난이도 값: {recommendation}")
+                return
+
+            logging.debug(f"난이도 평가 실행: {recommendation}")
+            
+            # 현재 리뷰어 가져오기
+            reviewer = mw.reviewer
+            if not reviewer:
+                logging.error("리뷰어를 찾을 수 없습니다.")
+                return
+
+            # 난이도에 따른 ease 값 매핑
+            ease_mapping = {
                 "Again": 1,
                 "Hard": 2,
                 "Good": 3,
                 "Easy": 4
             }
-            ease = difficulty_map.get(recommendation)
 
-            if ease is None:
-                logger.error(f"Invalid recommendation: {recommendation}")
-                return
-
-            if mw.reviewer:
-                # 대신 MessageManager에서 메시지 가져오기
-                self.last_difficulty_message = self.message_manager.create_difficulty_message(recommendation)
-                logger.debug(f"""
-=== Difficulty Message Set ===
-Recommendation: {recommendation}
-Message saved for next card
-Will be displayed after card transition
-""")
-                
-                # 난이도 선택 실행
-                self._execute_answer_card(ease)
-
+            # 난이도 평가 실행
+            ease = ease_mapping.get(recommendation)
+            if ease:
+                reviewer._answerCard(ease)
+                logging.info(f"난이도 평가 완료: {recommendation} (ease: {ease})")
+            
         except Exception as e:
-            logger.exception(f"Error following LLM suggestion: {e}")
-
-    def _execute_answer_card(self, ease):
-        """난이도 선택을 실행합니다."""
-        try:
-            logger.debug(f"""
-=== Execute Answer Card ===
-Ease: {ease}
-Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
-This will trigger on_user_answer_card
-""")
-            mw.reviewer._answerCard(ease)
-        except Exception as e:
-            logger.exception(f"Error calling _answerCard: {e}")
+            error_msg = f"난이도 평가 중 오류가 발생했습니다: {str(e)}"
+            logging.error(error_msg)
+            self._show_error_message(error_msg)
 
     def show_button_clicked(self, recommendation):
         """Displays which button was clicked in the UI."""
@@ -992,3 +958,41 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 QTimer.singleShot(300, delayed_append)  # 0.3초 딜레이 추가
             except Exception as e:
                 self.show_error_message(f"카드 로드 실패: {str(e)}")
+
+    def process_answer(self, answer_text: str) -> None:
+        """사용자 답변을 처리하고 LLM에 전송합니다."""
+        try:
+            if not answer_text.strip():
+                return
+
+            # 답변 시간 기록
+            self.bridge.stop_timer()
+            elapsed_time = self.bridge.get_elapsed_time()
+            
+            # 사용자 답변 메시지 생성 및 표시
+            user_message = self.message_manager.create_user_message(content=answer_text)
+            self.append_to_chat(user_message)
+            
+            # LLM 응답 처리
+            card_content, correct_answers, card_ord = self.bridge.get_card_content()
+            if not card_content or not correct_answers:
+                self.show_error_message("카드 내용을 가져올 수 없습니다.")
+                return
+
+            # LLM에 요청 보내기 - Bridge 클래스가 난이도 메시지 처리를 담당
+            self.bridge.llm_data = {
+                "card_content": card_content,
+                "user_answer": answer_text,
+                "correct_answers": correct_answers,
+                "elapsed_time": elapsed_time,
+                "card_ord": card_ord
+            }
+            
+            # 답변 처리 시작
+            thread = threading.Thread(target=self.bridge.process_answer)
+            thread.start()
+
+        except Exception as e:
+            error_msg = f"답변 처리 중 오류 발생: {str(e)}"
+            logging.error(error_msg)
+            self.show_error_message(error_msg)

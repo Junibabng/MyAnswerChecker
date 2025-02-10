@@ -90,7 +90,7 @@ def setup_webchannel(bridge, web):
 
 def initialize_addon():
     """Initialize the addon"""
-    global bridge, chat_service
+    global bridge, chat_service, answer_checker_window
     try:
         # 설정 로드
         settings = settings_manager.load_settings()
@@ -103,6 +103,10 @@ def initialize_addon():
         # 브릿지 초기화
         if bridge is None:
             bridge = Bridge()
+            
+        # Answer Checker Window 초기화
+        if answer_checker_window is None:
+            answer_checker_window = AnswerCheckerWindow(bridge, mw)
             
         logger.info("Addon initialized successfully")
     except Exception as e:
@@ -156,24 +160,83 @@ def add_menu():
 
 def open_answer_checker_window():
     """Opens the answer checker window"""
-    global bridge
-    window = AnswerCheckerWindow(bridge, mw)
-    window.show()
+    global answer_checker_window, bridge
+    try:
+        if not bridge:
+            initialize_addon()
+        if answer_checker_window is None:
+            answer_checker_window = AnswerCheckerWindow(bridge, mw)
+        answer_checker_window.show()
+    except Exception as e:
+        logger.error(f"Error opening Answer Checker: {str(e)}")
+        showInfo(f"Error opening Answer Checker: {str(e)}")
 
 def on_profile_loaded():
-    """Function to be executed when the profile is loaded"""
-    global bridge
+    """프로필이 로드될 때 호출되는 함수입니다."""
+    global bridge, answer_checker_window, message_manager
+    
     try:
-        load_global_settings()
+        # Bridge 초기화
         if bridge is None:
             bridge = Bridge()
-            add_menu()
-            logger.info("Addon initialization complete")
-        else:
-            logger.info("Addon already initialized.")
+            logger.debug("Bridge initialized")
+
+        # Answer Checker Window 초기화
+        if answer_checker_window is None:
+            answer_checker_window = AnswerCheckerWindow(bridge)
+            logger.debug("Answer Checker Window initialized")
+
+        # 메뉴 아이템 추가
+        setup_menu()
+        logger.debug("Menu items added successfully")
+
     except Exception as e:
-        logger.exception("Error initializing addon: %s", e)
-        showInfo(f"Error initializing addon: ")
+        logger.error(f"Error in on_profile_loaded: {str(e)}")
+        show_info(f"초기화 중 오류가 발생했습니다: {str(e)}")
+
+def setup_menu():
+    """메뉴 설정을 초기화합니다."""
+    global answer_checker_window
+    
+    try:
+        # 기존 메뉴 제거
+        if hasattr(mw, 'myAnswerCheckerAction'):
+            mw.myAnswerCheckerAction.setVisible(False)
+            mw.form.menuTools.removeAction(mw.myAnswerCheckerAction)
+        
+        # 새 메뉴 추가
+        action = QAction("Answer Checker", mw)
+        action.triggered.connect(lambda: toggle_answer_checker_window())
+        mw.form.menuTools.addAction(action)
+        mw.myAnswerCheckerAction = action
+        
+        logger.debug("Menu setup completed")
+        
+    except Exception as e:
+        logger.error(f"Error in setup_menu: {str(e)}")
+        show_info(f"메뉴 설정 중 오류가 발생했습니다: {str(e)}")
+
+def toggle_answer_checker_window():
+    """Answer Checker Window를 토글합니다."""
+    global answer_checker_window, bridge
+    
+    try:
+        if not bridge:
+            initialize_addon()
+        if answer_checker_window is None:
+            answer_checker_window = AnswerCheckerWindow(bridge, mw)
+            logger.debug("Created new Answer Checker Window")
+        
+        if answer_checker_window.isVisible():
+            answer_checker_window.hide()
+            logger.debug("Answer Checker Window hidden")
+        else:
+            answer_checker_window.show()
+            logger.debug("Answer Checker Window shown")
+            
+    except Exception as e:
+        logger.error(f"Error in toggle_answer_checker_window: {str(e)}")
+        showInfo(f"창 표시 중 오류가 발생했습니다: {str(e)}")
 
 # Register hooks
 gui_hooks.profile_did_open.append(on_profile_loaded)

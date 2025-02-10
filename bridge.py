@@ -29,6 +29,7 @@ from .message import MessageType, Message
 from .settings_manager import settings_manager
 from .providers.provider_factory import get_provider
 from aqt.qt import QSettings
+from .auto_difficulty import extract_difficulty  # 재정의
 
 # Logging setup
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -344,57 +345,39 @@ class Bridge(QObject):
 
     def is_complete_response(self, response_text):
         """
-        응답이 완전한 JSON을 포함하는지 확인합니다.
-        
-            response_text (str): 확인할 텍스트
-            
-        Returns:
-            bool: 응답이 완전하면 True, 아니면 False
+        응답이 완전한지, 즉 추천 문자열이 포함되어 있는지 확인합니다.
         """
         try:
-            # 1. 예시 JSON과 설명 텍스트 제거
-            response_text = re.sub(r'```json\s*{\s*"[^"]+"\s*:\s*"\.\.\."\s*[,}][\s\S]*?```', '', response_text)
-            response_text = re.sub(r'\*\*.*?\*\*', '', response_text)
-            response_text = re.sub(r'{{c\d+::.*?}}', '', response_text)
-            
-            # 2. JSON 찾기
-            patterns = [
-                # 완전한 코드 블록
-                r'```(?:json)?\s*({[^{]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})\s*```',
-                # 시작 코드 블록만 있는 경우
-                r'```(?:json)?\s*({[^{]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})\s*$',
-                # JSON만 있는 경우
-                r'(?:^|\s)({[^{]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})'
-            ]
-            
-            for pattern in patterns:
-                matches = list(re.finditer(pattern, response_text, re.DOTALL))
-                if matches:
-                    # 마지막 매치 사용
-                    cleaned_text = matches[-1].group(1).strip()
-                    
-                    # JSON 파싱
-                    parsed_json = json.loads(cleaned_text)
-                    
-                    # 필수 필드 확인
-                    required_fields = ["evaluation", "recommendation", "answer", "reference"]
-                    if not all(field in parsed_json for field in required_fields):
-                        logger.debug(f"Missing required fields in JSON: {parsed_json.keys()}")
-                        continue
-                    
-                    # recommendation 값 검증
-                    valid_recommendations = ["Again", "Hard", "Good", "Easy"]
-                    if parsed_json["recommendation"] not in valid_recommendations:
-                        logger.debug(f"Invalid recommendation value: {parsed_json['recommendation']}")
-                        continue
-                    
-                    return True
-            
-            logger.debug("No valid JSON pattern found in response")
-            return False
-            
-        except (json.JSONDecodeError, AttributeError, IndexError) as e:
-            logger.debug(f"Response incomplete: {str(e)}")
+            # JSON 객체 찾기
+            json_match = re.search(r'({[^{}]*"recommendation"[^{}]*})', response_text)
+            if not json_match:
+                logger.debug("No JSON object found in response")
+                return False
+
+            # JSON 파싱 시도
+            try:
+                json_str = json_match.group(1)
+                response_json = json.loads(json_str)
+            except json.JSONDecodeError:
+                logger.debug("Invalid JSON format")
+                return False
+
+            # recommendation 필드 확인
+            if "recommendation" not in response_json:
+                logger.debug("Missing recommendation field")
+                return False
+
+            # recommendation 값 검증
+            recommendation = response_json["recommendation"].strip()
+            valid_recommendations = [DIFFICULTY_AGAIN, DIFFICULTY_HARD, DIFFICULTY_GOOD, DIFFICULTY_EASY]
+            if recommendation not in valid_recommendations:
+                logger.debug(f"Invalid recommendation value: {recommendation}")
+                return False
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error checking response completeness: {str(e)}")
             return False
 
     def update_llm_provider(self, settings=None):
@@ -529,178 +512,167 @@ class Bridge(QObject):
     def create_llm_message(self, card_content, card_answers, question, request_type):
         """Creates the message to be sent to the LLM API."""
         try:
+            # Obtain card content etc.
             card = mw.reviewer.card
             note = card.note()
             model = note.model()
             model_type = model.get('type')
-
+            
             settings = settings_manager.load_settings()
-            easy_threshold = int(settings.get("easyThreshold", "5"))
-            good_threshold = int(settings.get("goodThreshold", "15"))
-            hard_threshold = int(settings.get("hardThreshold", "50"))
+            easy_threshold = int(settings.get("easyThreshold", 5))
+            good_threshold = int(settings.get("goodThreshold", 15))
+            hard_threshold = int(settings.get("hardThreshold", 50))
             elapsed_time = self.llm_data.get("elapsed_time")
             language = settings.get("language", "English")
             
-            # 현재 시스템 프롬프트 확인 및 업데이트
+            # Ensure system prompt is up-to-date
             current_system_prompt = settings.get("systemPrompt", "You are a helpful assistant.")
             if current_system_prompt != self.system_prompt:
                 self.system_prompt = current_system_prompt
                 if hasattr(self.llm_provider, 'set_system_prompt'):
                     self.llm_provider.set_system_prompt(self.system_prompt)
-
+            
             # Clean content
             soup_content = BeautifulSoup(card_content, 'html.parser')
             clean_content = soup_content.get_text()
             
-            # Format answers as a comma-separated list
             formatted_answers = ", ".join(card_answers) if isinstance(card_answers, list) else str(card_answers)
             logger.debug(f"Formatted answers for LLM: {formatted_answers}")
-
-            # 드 컨텍스트 업데이트
-            self.conversation_history['card_context'] = {
-                'content': card_content,
-                'answers': card_answers
-            }
-
+            
             # 이전 대화 내용 가져오기
             conversation_context = []
             if self.conversation_history['messages']:
                 conversation_context.append("\nPrevious conversation:")
                 for msg in self.conversation_history['messages'][-self.max_context_length:]:
                     conversation_context.append(f"{msg['role'].title()}: {msg['content']}")
-
+            
             # Create common context data
             context_data = f"""
             Context about this Anki card:
             Card Content: {clean_content}
             Correct Answer(s): {formatted_answers}
-            User's Previous Answer: {self.last_user_answer or 'Not available'}
-            Time Taken: {self.last_elapsed_time or 'Not available'} seconds
-            Previous Evaluation: {self.last_response.get('evaluation', 'Not available') if self.last_response else 'Not available'}
-            Previous Recommendation: {self.last_response.get('recommendation', 'Not available') if self.last_response else 'Not available'}
+            User's Answer: {self.llm_data.get('user_answer', 'Not available')}
+            Time Taken: {elapsed_time or 'Not available'} seconds
+            Previous Evaluation: Not available
+            Previous Recommendation: Not available
             {''.join(conversation_context)}
             """
 
-            # request_type별 특화된 프롬프트와 시스템 메시지
             type_specific_content = {
                 "answer": {
                     "system": f"You are a helpful assistant. Always answer in {language}.",
                     "content": f"""
-                    Evaluate the user's answer to an Anki card and recommend one of the following options: '{DIFFICULTY_AGAIN}', '{DIFFICULTY_HARD}', '{DIFFICULTY_GOOD}', or '{DIFFICULTY_EASY}'.
+                        Evaluate the user's answer to an Anki card and recommend one of the following options: '{DIFFICULTY_AGAIN}', '{DIFFICULTY_HARD}', '{DIFFICULTY_GOOD}', or '{DIFFICULTY_EASY}'.
 
-                    Your evaluation should include:
-                        - An assessment of the semantic accuracy of the user's answer
-                        - Consideration of the time taken to answer
-                        - The correct answer and its variations
-                        - Additional reference information to help the user understand
+                        Your evaluation should include:
+                            - An assessment of the semantic accuracy of the user's answer
+                            - Consideration of the time taken to answer
+                            - The correct answer and its variations
+                            - Additional reference information to help the user understand
 
-                    Evaluation Criteria:
-                        1. Content Accuracy:
-                            Essential Meaning Assessment:
-                                - Focus on whether the user's answer captures the core meaning
-                                - Accept synonyms and alternative expressions that convey the same idea
-                                - Allow for common variations in language use
-                                - Accept informal or colloquial forms if they clearly convey the same meaning
-                                {f"- For the {self.llm_data.get('card_ord', 0) + 1}th blank, assess meaning equivalence while being mindful of context" if model_type == 1 else ""}
+                        Evaluation Criteria:
+                            1. Content Accuracy:
+                                Essential Meaning Assessment:
+                                    - Focus on whether the user's answer captures the core meaning
+                                    - Accept synonyms and alternative expressions that convey the same idea
+                                    - Allow for common variations in language use
+                                    - Accept informal or colloquial forms if they clearly convey the same meaning
+                                    {f"- For the {self.llm_data.get('card_ord', 0) + 1}th blank, assess meaning equivalence while being mindful of context" if model_type == 1 else ""}
 
-                            Acceptable Variations:
-                                - Minor spelling or typing errors if meaning is clear
-                                - Grammatical variations that preserve the core meaning
-                                - Colloquial or informal expressions that match the meaning
-                                - Regional language variations if semantically equivalent
+                                Acceptable Variations:
+                                    - Minor spelling or typing errors if meaning is clear
+                                    - Grammatical variations that preserve the core meaning
+                                    - Colloquial or informal expressions that match the meaning
+                                    - Regional language variations if semantically equivalent
 
-                            Strictly Incorrect Cases:
-                                - Answers that change or negate the intended meaning
-                                - Completely unrelated or irrelevant responses
-                                - Overly vague answers that don't demonstrate understanding
+                                Strictly Incorrect Cases:
+                                    - Answers that change or negate the intended meaning
+                                    - Completely unrelated or irrelevant responses
+                                    - Overly vague answers that don't demonstrate understanding
 
+                            2. Response Time:
+                                - Only consider time for semantically correct answers
+                                - Time thresholds for difficulty levels:
+                                    - Easy: < {easy_threshold} seconds
+                                    - Good: {easy_threshold} - {good_threshold} seconds
+                                    - Hard: ≥ {good_threshold} seconds
+                                    - Auto-Again: > {hard_threshold} seconds
 
-                        2. Response Time:
-                            - Only consider time for semantically correct answers
-                            - Time thresholds for difficulty levels:
-                                - Easy: < {easy_threshold} seconds
-                                - Good: {easy_threshold} - {good_threshold} seconds
-                                - Hard: ≥ {good_threshold} seconds
-                                - Auto-Again: > {hard_threshold} seconds
+                        Recommendation Guidelines:
+                            {DIFFICULTY_AGAIN}:
+                                Recommend if:
+                                    - The answer fails to convey the essential meaning
+                                    - The response is unrelated or changes the core concept
+                                    - Time exceeds {hard_threshold} seconds (regardless of correctness)
+                                    - The answer is too vague to demonstrate understanding
 
-                    Recommendation Guidelines:
-                        {DIFFICULTY_AGAIN}:
-                            Recommend if:
-                                - The answer fails to convey the essential meaning
-                                - The response is unrelated or changes the core concept
-                                - Time exceeds {hard_threshold} seconds (regardless of correctness)
-                                - The answer is too vague to demonstrate understanding
+                            {DIFFICULTY_HARD}:
+                                Recommend if:
+                                    - The answer correctly conveys the meaning
+                                    - Response time ≥ {good_threshold} seconds
+                                    - Shows understanding but took significant time to recall
 
-                        {DIFFICULTY_HARD}:
-                            Recommend if:
-                                - The answer correctly conveys the meaning
-                                - Response time ≥ {good_threshold} seconds
-                                - Shows understanding but took significant time to recall
+                            {DIFFICULTY_GOOD}:
+                                Recommend if:
+                                    - The answer correctly conveys the meaning
+                                    - Response time between {easy_threshold} and {good_threshold} seconds
+                                    - Demonstrates good understanding with reasonable recall speed
 
-                        {DIFFICULTY_GOOD}:
-                            Recommend if:
-                                - The answer correctly conveys the meaning
-                                - Response time between {easy_threshold} and {good_threshold} seconds
-                                - Demonstrates good understanding with reasonable recall speed
+                            {DIFFICULTY_EASY}:
+                                Recommend if:
+                                    - The answer correctly conveys the meaning
+                                    - Response time < {easy_threshold} seconds
+                                    - Shows quick and confident recall
 
-                        {DIFFICULTY_EASY}:
-                            Recommend if:
-                                - The answer correctly conveys the meaning
-                                - Response time < {easy_threshold} seconds
-                                - Shows quick and confident recall
+                        Additional Guidelines:
+                            Language Variations:
+                                - Accept common synonyms (e.g., 'gonna' for 'going to')
+                                - Allow for dialectal variations if meaning is preserved
+                                - Consider context when evaluating informal expressions
+                                - Recognize alternative grammatical forms
 
-                    Additional Guidelines:
-                        Language Variations:
-                            - Accept common synonyms (e.g., 'gonna' for 'going to')
-                            - Allow for dialectal variations if meaning is preserved
-                            - Consider context when evaluating informal expressions
-                            - Recognize alternative grammatical forms
+                            Feedback Approach:
+                                - Acknowledge correct meaning even if form differs
+                                - Provide standard form for reference when variations used
+                                - Include constructive guidance for improvement
+                                - Explain why variations are acceptable when relevant
 
-                        Feedback Approach:
-                            - Acknowledge correct meaning even if form differs
-                            - Provide standard form for reference when variations used
-                            - Include constructive guidance for improvement
-                            - Explain why variations are acceptable when relevant
+                            Multiple Answers:
+                                - All essential concepts must be present
+                                - Accept equivalent expressions for each concept
+                                - Consider context for meaning assessment
+                                - Allow for variation in expression order
 
-                        Multiple Answers:
-                            - All essential concepts must be present
-                            - Accept equivalent expressions for each concept
-                            - Consider context for meaning assessment
-                            - Allow for variation in expression order
+                        Example Applications:
+                            1. Variation in Form:
+                                User Answer: "gonna"
+                                Correct Answer: "going to"
+                                Evaluation: Correct (same meaning, informal variation)
+                                Recommendation: Based on time + "Consider standard form 'going to'"
 
-                    Example Applications:
-                        1. Variation in Form:
-                            User Answer: "gonna"
-                            Correct Answer: "going to"
-                            Evaluation: Correct (same meaning, informal variation)
-                            Recommendation: Based on time + "Consider standard form 'going to'"
+                            2. Semantic Equivalence:
+                                User Answer: "will not"
+                                Correct Answer: "won't"
+                                Evaluation: Correct (semantically equivalent expression)
+                                Recommendation: Based on time + "Alternative expression accepted"
 
-                        2. Semantic Equivalence:
-                            User Answer: "will not"
-                            Correct Answer: "won't"
-                            Evaluation: Correct (semantically equivalent expression)
-                            Recommendation: Based on time + "Alternative expression accepted"
+                            3. Incorrect Meaning:
+                                User Answer: "will"
+                                Correct Answer: "won't"
+                                Evaluation: Incorrect (opposite meaning)
+                                Recommendation: {DIFFICULTY_AGAIN}
 
-                        3. Incorrect Meaning:
-                            User Answer: "will"
-                            Correct Answer: "won't"
-                            Evaluation: Incorrect (opposite meaning)
-                            Recommendation: {DIFFICULTY_AGAIN}
+                        **Data Provided:**
+                            Card Content: {clean_content}
+                            Correct Answer(s): {formatted_answers}
+                            User's Answer: {self.llm_data.get("user_answer", "Not available")}
+                            Time Taken: {elapsed_time} seconds
 
-                    **Data Provided:**
-                        Card Content: {clean_content}
-                        Correct Answer(s): {formatted_answers}
-                        User's Answer: {self.llm_data.get("user_answer", "Not available")}
-                        Time Taken: {elapsed_time} seconds
-
-                    Please provide evaluation in JSON format:
-                    {{
-                        "evaluation": "Detailed assessment focusing on semantic accuracy and time",
-                        "recommendation": "{DIFFICULTY_AGAIN}, {DIFFICULTY_HARD}, {DIFFICULTY_GOOD}, {DIFFICULTY_EASY}",
-                        "answer": "The correct answer(s) and acceptable variations",
-                        "reference": "Additional helpful information including standard forms"
-                    }}
-                    """
+                        A difficulty recommendation string must be included exactly at the very end of the final answer as follows:
+                        {{
+                            "recommendation": "Again|Hard|Good|Easy"
+                        }}
+                        """
                 },
                 "question": {
                     "system": f"You are a helpful assistant. Always answer in {language}.",
@@ -716,8 +688,8 @@ class Bridge(QObject):
                 }
             }
 
-            # 현재 메시지를 대화 기록에 추가
-            if request_type != "answer":  # answer type은 별도로 관리
+            # 현재 메시지를 대화 기록에 추가 (for request types other than answer)
+            if request_type != "answer":
                 if question:
                     self.conversation_history['messages'].append({
                         'role': 'user',
@@ -735,15 +707,15 @@ class Bridge(QObject):
             return "Error creating LLM message", "Error creating LLM message"
 
     def process_answer(self):
-        """Calls the OpenAI API in a background thread to get the evaluation."""
+        """Calls the LLM API in a background thread to get the evaluation."""
         try:
-            # 드 변경 확인 및 대화 기록 초기화
+            # If card changed, reset conversation history
             card = mw.reviewer.card
             if card and card.id != self.current_card_id:
                 self.current_card_id = card.id
                 self.clear_conversation_history()
             
-            # 사용자 답변을 대화 기록에 추가
+            # Add user's answer to conversation history
             self.conversation_history['messages'].append({
                 'role': 'user',
                 'content': f"Answer: {self.llm_data.get('user_answer', 'Not available')}"
@@ -762,103 +734,48 @@ class Bridge(QObject):
             
             response_text = self.call_llm_api(system_message, user_message_content)
             logger.debug(f"LLM Raw Response: {response_text}")
-
-            json_text = None
-            max_attempts = 3
-            for attempt in range(max_attempts):
-                json_text = self.extract_json_from_text(response_text)
-                if json_text:
-                    logger.debug(f"JSON extraction successful (Attempt: {attempt + 1}): {json_text}")
-                    break
-                logger.debug(f"JSON extraction failed (Attempt: {attempt + 1})")
             
-            if json_text:
-                try:
-                    response_json = json.loads(json_text)
-                    evaluation = response_json.get("evaluation", "No evaluation")
-                    recommendation = response_json.get("recommendation", "No recommendation")
-                    
-                    # Process answer as comma-separated list
-                    answer = response_json.get("answer", "")
-                    if answer:
-                        # Remove bullet points and split by newlines or commas
-                        answer_parts = []
-                        for part in re.split(r'[,\n]', answer):
-                            part = part.strip()
-                            if part:
-                                # Remove bullet points and other markers
-                                part = re.sub(r'^[•\-\*]\s*', '', part)
-                                answer_parts.append(part)
-                        answer = ', '.join(answer_parts)
-                    
-                    reference = response_json.get("reference", "")
-                    
-                    # 응답, 사용자 답변, 소요 시간 저장
-                    self.last_response = response_json
-                    self.last_user_answer = self.llm_data.get("user_answer", "")
-                    self.last_elapsed_time = self.llm_data.get("elapsed_time", "")
+            # Store the raw response
+            self.last_response = response_text
 
-                    # LLM의 응답을 대화 기록에 추가
-                    self.conversation_history['messages'].append({
-                        'role': 'assistant',
-                        'content': f"Evaluation: {evaluation}\nRecommendation: {recommendation}\nReference: {reference}"
-                    })
+            # Extract recommendation and create difficulty message
+            recommendation = self.extract_difficulty(response_text)
+            if recommendation:
+                logger.debug(f"추출된 난이도 추천: {recommendation}")
+                
+                # Get the global answer_checker_window
+                from . import answer_checker_window as acw
+                if hasattr(acw, 'answer_checker_window') and acw.answer_checker_window:
+                    # Create and display difficulty message
+                    difficulty_message = acw.answer_checker_window.message_manager.create_difficulty_message(recommendation)
+                    acw.answer_checker_window.append_to_chat(difficulty_message)
+                    acw.answer_checker_window.last_difficulty_message = difficulty_message
                     
-                    response = json.dumps({
-                        "evaluation": self.markdown_to_html(evaluation),
-                        "recommendation": self.markdown_to_html(recommendation),
-                        "answer": answer,
-                        "reference": self.markdown_to_html(reference)
-                    })
-                    QMetaObject.invokeMethod(
-                        self,
-                        "sendResponse",
-                        Qt.ConnectionType.QueuedConnection,
-                        Q_ARG(str, response)
-                    )
-                except json.JSONDecodeError as e:
-                    logger.error(f"Could not parse OpenAI response as JSON: {e}")
-                    showInfo("Could not parse OpenAI response as JSON. Please try asking for the answer again.")
-                    response = json.dumps({
-                        "evaluation": "Parsing error",
-                        "recommendation": None,
-                        "answer": "",
-                        "reference": ""
-                    })
-                    QMetaObject.invokeMethod(
-                        self,
-                        "sendResponse",
-                        Qt.ConnectionType.QueuedConnection,
-                        Q_ARG(str, response)
-                    )
-            else:
-                logger.error("Could not find JSON pattern")
-                showInfo("Could not find JSON pattern in OpenAI response. Please try asking for the answer again.")
-                response = json.dumps({
-                    "evaluation": "JSON pattern error",
-                    "recommendation": None,
-                    "answer": "",
-                    "reference": ""
-                })
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, response)
-                )
+                    # Execute automatic difficulty evaluation
+                    acw.answer_checker_window.follow_llm_suggestion()
+                else:
+                    logger.warning("Answer Checker Window is not available for displaying difficulty message")
+
+            QMetaObject.invokeMethod(
+                self,
+                "sendResponse",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, response_text)
+            )
         except Exception as e:
             logger.exception("Error processing OpenAI API: %s", e)
-            response = json.dumps({
+            error_response = json.dumps({
                 "evaluation": "Error occurred",
                 "recommendation": "None",
                 "answer": "",
                 "reference": ""
             })
+            self.last_response = error_response
             QMetaObject.invokeMethod(
                 self,
                 "sendResponse",
                 Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, response)
+                Q_ARG(str, error_response)
             )
         finally:
             self._clear_llm_data()
@@ -891,25 +808,23 @@ class Bridge(QObject):
                 'content': response
             })
             
-            # 응답 전송
-            response_json = json.dumps({"answer": response})
+            # 응답 직접 전송
             logger.debug(f"Sending response (truncated): {response[:200]}...")
             
             QMetaObject.invokeMethod(
                 self,
                 "sendQuestionResponse",
                 Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, response_json)
+                Q_ARG(str, response)
             )
             
         except Exception as e:
             logger.exception("Error processing additional question: %s", e)
-            error_json = json.dumps({"error": str(e)})
             QMetaObject.invokeMethod(
                 self,
                 "sendQuestionResponse",
                 Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, error_json)
+                Q_ARG(str, str(e))
             )
 
     def extract_json_from_text(self, text):
@@ -1288,6 +1203,56 @@ class Bridge(QObject):
         except Exception as e:
             logger.error(f"설정 업데이트 중 오류 발생: {str(e)}")
             raise
+
+    def extract_difficulty(self, llm_response: str) -> str:
+        """
+        LLM 응답에서 난이도 추천을 추출합니다.
+        
+        Args:
+            llm_response (str): LLM의 전체 응답 텍스트
+            
+        Returns:
+            str: 추출된 난이도 값 ("Again", "Hard", "Good", "Easy" 중 하나)
+                 추출 실패 시 빈 문자열 반환
+        """
+        try:
+            if not llm_response:
+                logging.error("LLM 응답이 비어있습니다.")
+                return ""
+            
+            logging.debug(f"LLM 응답 처리 시작:\n{llm_response[:200]}...")
+            
+            # JSON 블록을 찾기 위한 정규식
+            pattern = r'\{[^{]*"recommendation"\s*:\s*"([^"]+)"[^}]*\}\s*$'
+            match = re.search(pattern, llm_response, re.DOTALL)
+            
+            if match:
+                recommendation = match.group(1).strip()
+                logging.debug(f"추출된 난이도: {recommendation}")
+                
+                # 유효한 난이도 값인지 확인
+                valid_recommendations = ["Again", "Hard", "Good", "Easy"]
+                if recommendation in valid_recommendations:
+                    return recommendation
+                else:
+                    logging.error(f"잘못된 난이도 값: {recommendation}")
+            else:
+                logging.error("추천 JSON 블록을 찾을 수 없습니다.")
+                logging.debug(f"응답의 마지막 부분:\n{llm_response[-200:]}")
+            
+            return ""
+            
+        except Exception as e:
+            logging.error(f"난이도 추출 중 오류 발생: {str(e)}")
+            return ""
+
+    def get_last_response(self) -> str:
+        """마지막 LLM 응답을 반환합니다."""
+        return self.last_response
+
+    def get_elapsed_time(self) -> float:
+        """답변에 걸린 시간을 반환합니다."""
+        return self.elapsed_time if self.elapsed_time is not None else 0.0
 
 logger.info("Bridge initialized")
 
