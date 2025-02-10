@@ -185,6 +185,7 @@ class Bridge(QObject):
         self.update_config(settings)
         
         self.partial_response = ""
+        self._answer_checker_window = None  # 추가: AnswerCheckerWindow 참조 저장
         logger.info("Bridge initialized")
 
     def _initialize_attributes(self):
@@ -246,25 +247,60 @@ class Bridge(QObject):
         try:
             logger.debug(f"응답 처리 시작:\n{response_text[:200]}...")
             
-            complete_json = self.partial_response + response_text
-            response_json = json.loads(complete_json)
-            self.partial_response = ""
+            # 코드 블록 마커 제거
+            cleaned_response = re.sub(r'```json\s*|\s*```', '', response_text)
             
-            logger.debug(f"파싱된 JSON: {response_json}")
+            # JSON 객체를 찾기 위한 정규식 패턴
+            json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
             
-            if not isinstance(response_json, dict):
-                logger.error(f"잘못된 JSON 형식: {type(response_json)}")
-                raise ResponseProcessingError("응답이 올바른 JSON 객체가 아닙니다.")
-                
-            required_fields = ["evaluation", "recommendation", "answer"]
-            missing_fields = [field for field in required_fields if field not in response_json]
-            if missing_fields:
-                logger.error(f"필수 필드 누락: {missing_fields}")
-                raise ResponseProcessingError(f"응답에 필수 필드가 누락되었습니다: {', '.join(missing_fields)}")
+            # 모든 JSON 객체 찾기
+            json_matches = list(re.finditer(json_pattern, cleaned_response, re.DOTALL))
             
-            html_content = self._generate_response_html(response_json)
-            if answer_checker_window:
-                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
+            # 마지막 매치부터 역순으로 검사
+            json_str = None
+            response_json = None
+            
+            for match in reversed(json_matches):
+                try:
+                    json_str = match.group(0)
+                    data = json.loads(json_str)
+                    
+                    # recommendation 필드가 있고 값이 유효한지 확인
+                    if "recommendation" in data:
+                        recommendation = data["recommendation"].strip()
+                        valid_recommendations = [DIFFICULTY_AGAIN, DIFFICULTY_HARD, DIFFICULTY_GOOD, DIFFICULTY_EASY]
+                        
+                        if recommendation in valid_recommendations:
+                            response_json = data
+                            logger.debug(f"유효한 난이도 추출 성공: {recommendation}")
+                            break
+                        else:
+                            logger.debug(f"유효하지 않은 난이도 값: {recommendation}")
+                            continue
+                            
+                except json.JSONDecodeError:
+                    logger.debug("유효하지 않은 JSON 형식, 다음 매치 시도")
+                    continue
+                except Exception as e:
+                    logger.debug(f"JSON 처리 중 오류 발생: {str(e)}")
+                    continue
+            
+            if not json_str or not response_json:
+                logger.error("유효한 JSON을 찾을 수 없습니다.")
+                raise ResponseProcessingError("응답 형식이 올바르지 않습니다.")
+            
+            # 응답 텍스트에서 JSON 부분 제거
+            display_text = cleaned_response.replace(json_str, "").strip()
+            
+            # JSON 부분이 제거된 텍스트가 있으면 마크다운 변환
+            if display_text:
+                processed_content = self.markdown_to_html(display_text)
+            else:
+                processed_content = "평가가 완료되었습니다."
+            
+            if self._answer_checker_window:
+                html_content = self._generate_response_html(response_json)
+                self._answer_checker_window.web_view.setHtml(self._answer_checker_window.default_html + html_content)
                 logger.info("UI 업데이트 완료")
             return True
             
@@ -345,39 +381,48 @@ class Bridge(QObject):
 
     def is_complete_response(self, response_text):
         """
-        응답이 완전한지, 즉 추천 문자열이 포함되어 있는지 확인합니다.
+        응답이 완전한지, 즉 유효한 recommendation을 포함한 JSON이 있는지 확인합니다.
         """
         try:
-            # JSON 객체 찾기
-            json_match = re.search(r'({[^{}]*"recommendation"[^{}]*})', response_text)
-            if not json_match:
-                logger.debug("No JSON object found in response")
-                return False
-
-            # JSON 파싱 시도
-            try:
-                json_str = json_match.group(1)
-                response_json = json.loads(json_str)
-            except json.JSONDecodeError:
-                logger.debug("Invalid JSON format")
-                return False
-
-            # recommendation 필드 확인
-            if "recommendation" not in response_json:
-                logger.debug("Missing recommendation field")
-                return False
-
-            # recommendation 값 검증
-            recommendation = response_json["recommendation"].strip()
-            valid_recommendations = [DIFFICULTY_AGAIN, DIFFICULTY_HARD, DIFFICULTY_GOOD, DIFFICULTY_EASY]
-            if recommendation not in valid_recommendations:
-                logger.debug(f"Invalid recommendation value: {recommendation}")
-                return False
-
-            return True
-
+            # 코드 블록 마커 제거
+            cleaned_response = re.sub(r'```json\s*|\s*```', '', response_text)
+            
+            # JSON 객체를 찾기 위한 정규식 패턴
+            json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
+            
+            # 모든 JSON 객체 찾기
+            json_matches = list(re.finditer(json_pattern, cleaned_response, re.DOTALL))
+            
+            # 마지막 매치부터 역순으로 검사
+            for match in reversed(json_matches):
+                try:
+                    json_str = match.group(0)
+                    data = json.loads(json_str)
+                    
+                    # recommendation 필드가 있고 값이 유효한지 확인
+                    if "recommendation" in data:
+                        recommendation = data["recommendation"].strip()
+                        valid_recommendations = [DIFFICULTY_AGAIN, DIFFICULTY_HARD, DIFFICULTY_GOOD, DIFFICULTY_EASY]
+                        
+                        if recommendation in valid_recommendations:
+                            logger.debug(f"유효한 난이도 추출 성공: {recommendation}")
+                            return True
+                        else:
+                            logger.debug(f"유효하지 않은 난이도 값: {recommendation}")
+                            continue
+                            
+                except json.JSONDecodeError:
+                    logger.debug("유효하지 않은 JSON 형식, 다음 매치 시도")
+                    continue
+                except Exception as e:
+                    logger.debug(f"JSON 처리 중 오류 발생: {str(e)}")
+                    continue
+            
+            logger.debug("유효한 난이도 추천을 찾을 수 없습니다.")
+            return False
+            
         except Exception as e:
-            logger.error(f"Error checking response completeness: {str(e)}")
+            logger.error(f"응답 완성 여부 확인 중 오류 발생: {str(e)}")
             return False
 
     def update_llm_provider(self, settings=None):
@@ -743,16 +788,14 @@ class Bridge(QObject):
             if recommendation:
                 logger.debug(f"추출된 난이도 추천: {recommendation}")
                 
-                # Get the global answer_checker_window
-                from . import answer_checker_window as acw
-                if hasattr(acw, 'answer_checker_window') and acw.answer_checker_window:
+                if self._answer_checker_window:
                     # Create and display difficulty message
-                    difficulty_message = acw.answer_checker_window.message_manager.create_difficulty_message(recommendation)
-                    acw.answer_checker_window.append_to_chat(difficulty_message)
-                    acw.answer_checker_window.last_difficulty_message = difficulty_message
+                    difficulty_message = self._answer_checker_window.message_manager.create_difficulty_message(recommendation)
+                    self._answer_checker_window.append_to_chat(difficulty_message)
+                    self._answer_checker_window.last_difficulty_message = difficulty_message
                     
                     # Execute automatic difficulty evaluation
-                    acw.answer_checker_window.follow_llm_suggestion()
+                    self._answer_checker_window.follow_llm_suggestion()
                 else:
                     logger.warning("Answer Checker Window is not available for displaying difficulty message")
 
@@ -1253,6 +1296,11 @@ class Bridge(QObject):
     def get_elapsed_time(self) -> float:
         """답변에 걸린 시간을 반환합니다."""
         return self.elapsed_time if self.elapsed_time is not None else 0.0
+
+    def set_answer_checker_window(self, window):
+        """AnswerCheckerWindow 참조를 설정합니다."""
+        self._answer_checker_window = window
+        logger.debug("Answer Checker Window reference set")
 
 logger.info("Bridge initialized")
 

@@ -56,6 +56,7 @@ def open_answer_checker_window():
         if not bridge:
             initialize_addon()
         answer_checker_window = AnswerCheckerWindow(bridge, mw)
+        bridge.set_answer_checker_window(answer_checker_window)
         answer_checker_window.show()
     except Exception as e:
         logger.error(f"Error opening Answer Checker: {str(e)}")

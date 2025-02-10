@@ -5,14 +5,14 @@ import logging
 
 def extract_difficulty(llm_response: str) -> str:
     """
-    LLM 응답의 마지막 부분에서 recommendation JSON 블록을 찾아
-    그 안에 있는 난이도(recommendation) 값을 추출하여 반환합니다.
+    LLM 응답에서 난이도 추천을 추출합니다.
     
-    파라미터:
+    Args:
         llm_response (str): LLM의 전체 응답 텍스트
-
-    리턴:
-        str: 추출한 난이도 값. 없으면 빈 문자열 반환.
+        
+    Returns:
+        str: 추출된 난이도 값 ("Again", "Hard", "Good", "Easy" 중 하나)
+             추출 실패 시 빈 문자열 반환
     """
     if not llm_response:
         logging.error("LLM 응답이 비어있습니다.")
@@ -20,21 +20,47 @@ def extract_difficulty(llm_response: str) -> str:
         
     logging.debug(f"LLM 응답 처리 시작:\n{llm_response[:200]}...")
     
-    # 마지막에 나타나는 JSON 블럭을 찾기 위한 정규 표현식입니다.
-    pattern = r'\{[^{]*"recommendation"\s*:\s*"([^"]+)"[^}]*\}\s*$'
-    match = re.search(pattern, llm_response, re.DOTALL)
-    
-    if match:
-        try:
-            recommendation = match.group(1).strip()
-            logging.debug(f"추출된 난이도: {recommendation}")
-            return recommendation
-        except Exception as e:
-            logging.error(f"난이도 값 추출 중 오류: {str(e)}")
-    else:
-        logging.error("추천 JSON 블럭을 찾을 수 없습니다.")
-        logging.debug(f"응답의 마지막 부분:\n{llm_response[-200:]}")
-    return ""
+    try:
+        # 코드 블록 마커 제거
+        cleaned_response = re.sub(r'```json\s*|\s*```', '', llm_response)
+        
+        # JSON 객체를 찾기 위한 정규식 패턴
+        json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
+        
+        # 모든 JSON 객체 찾기
+        json_matches = list(re.finditer(json_pattern, cleaned_response, re.DOTALL))
+        
+        # 마지막 매치부터 역순으로 검사
+        for match in reversed(json_matches):
+            try:
+                json_str = match.group(0)
+                data = json.loads(json_str)
+                
+                # recommendation 필드가 있고 값이 유효한지 확인
+                if "recommendation" in data:
+                    recommendation = data["recommendation"].strip()
+                    valid_recommendations = ["Again", "Hard", "Good", "Easy"]
+                    
+                    if recommendation in valid_recommendations:
+                        logging.debug(f"유효한 난이도 추출 성공: {recommendation}")
+                        return recommendation
+                    else:
+                        logging.debug(f"유효하지 않은 난이도 값: {recommendation}")
+                        continue
+                        
+            except json.JSONDecodeError:
+                logging.debug("유효하지 않은 JSON 형식, 다음 매치 시도")
+                continue
+            except Exception as e:
+                logging.debug(f"JSON 처리 중 오류 발생: {str(e)}")
+                continue
+        
+        logging.error("유효한 난이도 추천을 찾을 수 없습니다.")
+        return ""
+            
+    except Exception as e:
+        logging.error(f"난이도 추출 중 오류 발생: {str(e)}")
+        return ""
 
 
 if __name__ == "__main__":

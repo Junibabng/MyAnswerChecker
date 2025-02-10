@@ -483,6 +483,7 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
         reviewer_did_show_question.remove(self.on_show_question)
         reviewer_did_show_answer.remove(self.on_show_answer)
         reviewer_did_answer_card.remove(self.on_user_answer_card)
+        self.bridge.set_answer_checker_window(None)  # Bridge의 window 참조 제거
         super().closeEvent(event)
 
     def display_loading_animation(self, show):

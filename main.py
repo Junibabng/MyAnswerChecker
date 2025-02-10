@@ -114,33 +114,17 @@ def initialize_addon():
         raise
 
 def add_menu():
-    """Add menu items to Anki"""
+    """Add Answer Checker menu to Anki main menubar"""
     try:
-        # 기존 메뉴 확인
-        tools_menu = None
-        answer_checker_menu = None
-        
+        # 기존 메뉴 제거
         for action in mw.form.menubar.actions():
-            if action.text() == "&Tools":
-                tools_menu = action.menu()
-                # 기존 Answer Checker 메뉴 찾기
-                for menu_action in tools_menu.actions():
-                    if menu_action.text() == "Answer Checker":
-                        answer_checker_menu = menu_action.menu()
-                        break
+            if action.text() == "Answer Checker":
+                mw.form.menubar.removeAction(action)
                 break
 
-        if tools_menu is None:
-            logger.error("Tools menu not found")
-            return
-            
-        # 이미 메뉴가 있으면 제거
-        if answer_checker_menu is not None:
-            tools_menu.removeAction(answer_checker_menu.menuAction())
-
         # 새 메뉴 생성
-        answer_checker_menu = QMenu("Answer Checker", tools_menu)
-        tools_menu.addMenu(answer_checker_menu)
+        answer_checker_menu = QMenu("Answer Checker", mw)
+        mw.form.menubar.addMenu(answer_checker_menu)
 
         # 메뉴 항목 추가
         menu_items = [
@@ -153,7 +137,7 @@ def add_menu():
             action.triggered.connect(callback)
             answer_checker_menu.addAction(action)
             
-        logger.debug("Menu items added successfully")
+        logger.debug("Answer Checker menu added to main menubar")
     except Exception as e:
         logger.error(f"Error adding menu items: {str(e)}")
         raise
@@ -166,6 +150,7 @@ def open_answer_checker_window():
             initialize_addon()
         if answer_checker_window is None:
             answer_checker_window = AnswerCheckerWindow(bridge, mw)
+            bridge.set_answer_checker_window(answer_checker_window)  # Bridge에 window 참조 설정
         answer_checker_window.show()
     except Exception as e:
         logger.error(f"Error opening Answer Checker: {str(e)}")
@@ -186,57 +171,13 @@ def on_profile_loaded():
             answer_checker_window = AnswerCheckerWindow(bridge)
             logger.debug("Answer Checker Window initialized")
 
-        # 메뉴 아이템 추가
-        setup_menu()
-        logger.debug("Menu items added successfully")
+        # 메뉴 추가
+        add_menu()
+        logger.debug("Menu initialization completed")
 
     except Exception as e:
         logger.error(f"Error in on_profile_loaded: {str(e)}")
         show_info(f"초기화 중 오류가 발생했습니다: {str(e)}")
-
-def setup_menu():
-    """메뉴 설정을 초기화합니다."""
-    global answer_checker_window
-    
-    try:
-        # 기존 메뉴 제거
-        if hasattr(mw, 'myAnswerCheckerAction'):
-            mw.myAnswerCheckerAction.setVisible(False)
-            mw.form.menuTools.removeAction(mw.myAnswerCheckerAction)
-        
-        # 새 메뉴 추가
-        action = QAction("Answer Checker", mw)
-        action.triggered.connect(lambda: toggle_answer_checker_window())
-        mw.form.menuTools.addAction(action)
-        mw.myAnswerCheckerAction = action
-        
-        logger.debug("Menu setup completed")
-        
-    except Exception as e:
-        logger.error(f"Error in setup_menu: {str(e)}")
-        show_info(f"메뉴 설정 중 오류가 발생했습니다: {str(e)}")
-
-def toggle_answer_checker_window():
-    """Answer Checker Window를 토글합니다."""
-    global answer_checker_window, bridge
-    
-    try:
-        if not bridge:
-            initialize_addon()
-        if answer_checker_window is None:
-            answer_checker_window = AnswerCheckerWindow(bridge, mw)
-            logger.debug("Created new Answer Checker Window")
-        
-        if answer_checker_window.isVisible():
-            answer_checker_window.hide()
-            logger.debug("Answer Checker Window hidden")
-        else:
-            answer_checker_window.show()
-            logger.debug("Answer Checker Window shown")
-            
-    except Exception as e:
-        logger.error(f"Error in toggle_answer_checker_window: {str(e)}")
-        showInfo(f"창 표시 중 오류가 발생했습니다: {str(e)}")
 
 # Register hooks
 gui_hooks.profile_did_open.append(on_profile_loaded)
