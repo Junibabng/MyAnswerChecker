@@ -3,6 +3,9 @@ from aqt import mw, gui_hooks
 from aqt.qt import QAction, QMenu
 from aqt.gui_hooks import reviewer_did_show_question, reviewer_did_show_answer
 from aqt.utils import showWarning, showInfo
+from anki.cards import Card
+from typing import Optional, Any
+
 from .bridge import Bridge
 from .answer_checker_window import AnswerCheckerWindow
 from .main import add_menu, openSettingsDialog, initialize_addon, load_global_settings
@@ -10,13 +13,13 @@ from .settings_manager import settings_manager
 from .auto_difficulty import extract_difficulty
 
 # Global instances
-bridge = None
-answer_checker_window = None
+bridge: Optional[Bridge] = None
+answer_checker_window: Optional[AnswerCheckerWindow] = None
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
-def initialize_addon():
+def initialize_addon() -> None:
     """Initialize the addon when profile is loaded"""
     global bridge
     try:
@@ -30,39 +33,39 @@ def initialize_addon():
         logger.error(f"Error initializing addon: {str(e)}")
         showWarning(f"Error initializing addon: {str(e)}")
 
-def register_hooks():
+def register_hooks() -> None:
     """Register all necessary hooks"""
     for hook, callback in [
-        (reviewer_did_show_question, on_show_question),
-        (reviewer_did_show_answer, on_show_answer)
+        (reviewer_did_show_question, show_question_),
+        (reviewer_did_show_answer, show_answer_)
     ]:
         hook.append(callback)
         logger.debug("Registered hook")
 
-def on_show_question(card):
-    """Hook for when a question is shown"""
+def show_question_(card: Card) -> None:
+    """카드 질문이 표시될 때 호출되는 핸들러"""
     if bridge:
         bridge.start_timer()
 
-def on_show_answer(card):
-    """Hook for when an answer is shown"""
+def show_answer_(card: Card) -> None:
+    """카드 답변이 표시될 때 호출되는 핸들러"""
     if bridge:
         bridge.stop_timer()
 
-def open_answer_checker_window():
-    """Opens the answer checker window"""
-    global answer_checker_window, bridge
-    try:
-        if not bridge:
-            initialize_addon()
-        answer_checker_window = AnswerCheckerWindow(bridge, mw)
+def show_answer_checker() -> None:
+    """답변 체크 창을 표시합니다."""
+    global bridge, answer_checker_window
+    
+    if answer_checker_window is None:
+        if bridge is None:
+            bridge = Bridge()
+        answer_checker_window = AnswerCheckerWindow(bridge)
         bridge.set_answer_checker_window(answer_checker_window)
-        answer_checker_window.show()
-    except Exception as e:
-        logger.error(f"Error opening Answer Checker: {str(e)}")
-        showWarning(f"Error opening Answer Checker: {str(e)}")
+    
+    answer_checker_window.show()
+    answer_checker_window.activateWindow()
 
-def on_profile_loaded():
+def on_profile_loaded() -> None:
     """Function to be executed when the profile is loaded"""
     global bridge
     try:
@@ -79,5 +82,5 @@ def on_profile_loaded():
 gui_hooks.profile_did_open.append(on_profile_loaded)
 
 # Register reviewer hooks
-gui_hooks.reviewer_did_show_question.append(on_show_question)
-gui_hooks.reviewer_did_show_answer.append(on_show_answer)
+gui_hooks.reviewer_did_show_question.append(show_question_)
+gui_hooks.reviewer_did_show_answer.append(show_answer_)

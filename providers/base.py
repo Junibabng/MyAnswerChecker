@@ -7,6 +7,9 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 import random
 import re
+from typing import Optional, Any, Dict, List, Generator, Callable
+import concurrent.futures
+from concurrent.futures import Future
 
 # Logging setup
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -176,6 +179,22 @@ class LLMProvider(ABC):
             'base_delay': 1,
             'max_delay': 8
         }
+        self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        self._setup_logging()
+
+    def _setup_logging(self) -> None:
+        """로깅 설정"""
+        logger.setLevel(logging.DEBUG)
+        file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+        file_handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s\n'
+            'File: %(filename)s:%(lineno)d\n'
+            'Function: %(funcName)s\n'
+            'Message: %(message)s\n'
+        )
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
     @abstractmethod
     def call_api(self, system_message, user_message, temperature=0.2):
@@ -293,6 +312,14 @@ class LLMProvider(ABC):
         except Exception as e:
             log_error(e, {'url': url, 'response': locals().get('response')})
             raise
+
+    def _execute_async(self, func: Callable, *args: Any, **kwargs: Any) -> Future:
+        """비동기 실행 헬퍼 메서드"""
+        return self.thread_pool.submit(func, *args, **kwargs)
+
+    def cleanup(self) -> None:
+        """리소스 정리"""
+        self.thread_pool.shutdown(wait=False)
 
 class OpenAIProvider(LLMProvider):
     """OpenAI API를 사용하는 LLM 프로바이더"""

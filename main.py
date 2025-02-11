@@ -2,20 +2,17 @@ import re
 import json
 import os
 import sys
-import threading
 import logging
-from aqt import mw, gui_hooks, QAction, QInputDialog, QMenu, QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox
-from aqt.utils import showInfo
-from bs4 import BeautifulSoup
-from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QTimer, QMetaObject, Q_ARG, Qt
-from PyQt6.QtWebChannel import QWebChannel
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QScrollArea, QHBoxLayout, QWidget
-import requests
+import concurrent.futures
 from datetime import datetime
 import time
-from aqt.qt import *
+import random
 from abc import ABC, abstractmethod
+from typing import Optional, Any, Dict, List, Generator, Callable
+
+from aqt import mw, gui_hooks
+from aqt.utils import showInfo, tooltip
+from aqt.qt import *
 from aqt.gui_hooks import (
     reviewer_will_end,
     reviewer_did_show_question,
@@ -24,15 +21,24 @@ from aqt.gui_hooks import (
     reviewer_will_show_context_menu,
 )
 
-from .message import MessageManager, show_info
-from .providers import OpenAIProvider, GeminiProvider
+from anki.cards import Card
+from aqt.reviewer import Reviewer
 
-# Logging setup (Corrected)
-import logging
-import os
-from aqt import mw
-from aqt.qt import QSettings
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QGroupBox
+from bs4 import BeautifulSoup
+from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QTimer, QMetaObject, Q_ARG, Qt
+from PyQt6.QtWebChannel import QWebChannel
+from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, 
+    QSpinBox, QDoubleSpinBox, QComboBox, QGroupBox,
+    QScrollArea, QHBoxLayout, QWidget, QCheckBox
+)
+
+from .message import MessageManager, show_info
+from .providers import OpenAIProvider, GeminiProvider, provider_factory
+from .settings_manager import settings_manager
+from .bridge import Bridge
+from .answer_checker_window import AnswerCheckerWindow
 
 # Setup logging
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -65,14 +71,9 @@ DIFFICULTY_EASY = "Easy"
 
 class LLMProvider(ABC):
     @abstractmethod
-    def call_api(self, system_message, user_message, temperature=0.2):
+    def call_api(self, system_message: str, user_message: str, temperature: float = 0.2) -> str:
+        """LLM API를 호출하여 응답을 받아옵니다."""
         pass
-
-from .bridge import Bridge
-from .answer_checker_window import AnswerCheckerWindow
-
-# Initialize Bridge and AnswerCheckerWindow
-bridge = Bridge()
 
 def setup_webchannel(bridge, web):
     """Sets up QWebChannel to enable communication between JavaScript and Python."""
@@ -240,8 +241,6 @@ def load_global_settings():
     logger.setLevel(logging.DEBUG if debug_logging else logging.INFO)
     
     logger.debug("Global settings loaded")
-
-from .settings_manager import settings_manager
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -530,3 +529,52 @@ def showInfo(message):
                 self.partial_response += response_text
                 self.partial_response = ""  # Reset buffer after successful parse
                 # ...existing response 처리 로직...
+
+class MainController:
+    def __init__(self) -> None:
+        self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        self.current_provider = None
+        self.initialize_provider()
+    
+    def initialize_provider(self) -> None:
+        try:
+            provider_name = settings_manager.get("provider", "openai")
+            self.current_provider = provider_factory.create_provider(provider_name)
+        except Exception as e:
+            logger.error(f"프로바이더 초기화 실패: {str(e)}")
+            self.current_provider = None
+
+    def show_question_(self, card: Card) -> None:
+        """카드 질문이 표시될 때 호출되는 핸들러"""
+        if not self.current_provider:
+            return
+        try:
+            logger.debug(f"Question shown for card: {card.id}")
+            # 여기에 질문 표시 로직 구현
+        except Exception as e:
+            logger.error(f"Error in show_question_: {str(e)}")
+
+    def show_answer_(self, card: Card) -> None:
+        """카드 답변이 표시될 때 호출되는 핸들러"""
+        if not self.current_provider:
+            return
+        try:
+            logger.debug(f"Answer shown for card: {card.id}")
+            # 여기에 답변 표시 로직 구현
+        except Exception as e:
+            logger.error(f"Error in show_answer_: {str(e)}")
+
+    def prepare_card_(self, card: Card) -> None:
+        """카드 준비 시 호출되는 핸들러"""
+        if not self.current_provider:
+            return
+        try:
+            logger.debug(f"Preparing card: {card.id}")
+            # 여기에 카드 준비 로직 구현
+        except Exception as e:
+            logger.error(f"Error in prepare_card_: {str(e)}")
+
+    def cleanup(self) -> None:
+        """리소스 정리"""
+        if self.thread_pool:
+            self.thread_pool.shutdown(wait=False)

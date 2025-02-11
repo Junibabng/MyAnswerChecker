@@ -18,14 +18,16 @@ import logging
 import threading
 import uuid  # UUID 추가
 from .message import MessageManager, Message, MessageType
-from typing import Optional
+from typing import Optional, Any, Dict, List
 from .settings_manager import settings_manager
 from .auto_difficulty import extract_difficulty
+from anki.cards import Card
+from aqt.reviewer import Reviewer
 
 logger = logging.getLogger(__name__)
 
 class AnswerCheckerWindow(QDialog):
-    def __init__(self, bridge, parent=None):
+    def __init__(self, bridge: Any, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.bridge = bridge
         self.setWindowTitle("MyAnswerChecker")
@@ -264,11 +266,11 @@ class AnswerCheckerWindow(QDialog):
         """
         self.input_field.returnPressed.connect(self.handle_enter_key)
         self.initialize_webview()
-        reviewer_did_show_question.append(self.on_show_question)
-        reviewer_did_show_answer.append(self.on_show_answer)
-        reviewer_did_answer_card.append(self.on_user_answer_card)
-        gui_hooks.reviewer_did_show_question.remove(self.on_prepare_card)
-        gui_hooks.reviewer_did_show_question.append(self.on_prepare_card)
+        reviewer_did_show_question.append(self.show_question_)
+        reviewer_did_show_answer.append(self.show_answer_)
+        reviewer_did_answer_card.append(self.user_answer_card_)
+        gui_hooks.reviewer_did_show_question.remove(self.prepare_card_)
+        gui_hooks.reviewer_did_show_question.append(self.prepare_card_)
 
         self.is_initial_answer = True
         self.is_processing = False
@@ -277,7 +279,7 @@ class AnswerCheckerWindow(QDialog):
         # 웰컴 메시지 표시 여부를 추적하는 플래그 추가
         self.welcome_message_shown = False
 
-    def initialize_webview(self):
+    def initialize_webview(self) -> None:
         """WebView 초기화 및 설정"""
         try:
             with self.initialization_lock:
@@ -300,7 +302,7 @@ class AnswerCheckerWindow(QDialog):
             self.initialization_event.clear()
             raise
 
-    def _check_webview_state(self):
+    def _check_webview_state(self) -> bool:
         """WebView의 상태를 확인하고 필요한 경우 초기화를 시도합니다."""
         try:
             with self.initialization_lock:
@@ -445,7 +447,7 @@ class AnswerCheckerWindow(QDialog):
         else:
             logger.error("LLM 응답을 찾을 수 없습니다.")
 
-    def on_show_question(self, card):
+    def show_question_(self, card: Card) -> None:
         """새로운 질문이 표시될 때 호출됩니다."""
         if self.isVisible():
             current_time = time.time()
@@ -460,12 +462,12 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
 """)
             # 중복 이벤트 체크만 수행하고 실제 카드 내용 처리는 on_prepare_card에서 수행
 
-    def on_show_answer(self, card):
+    def show_answer_(self, card: Card) -> None:
         """Called when an answer is shown."""
         if self.isVisible():
             pass
 
-    def on_user_answer_card(self, reviewer, card, ease):
+    def user_answer_card_(self, reviewer: Reviewer, card: Card, ease: int) -> None:
         """카드 답변 시 호출되는 핸들러"""
         if self.isVisible():
             logger.debug(f"""
@@ -489,9 +491,9 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def closeEvent(self, event):
         """Clean up when window is closed."""
-        reviewer_did_show_question.remove(self.on_show_question)
-        reviewer_did_show_answer.remove(self.on_show_answer)
-        reviewer_did_answer_card.remove(self.on_user_answer_card)
+        reviewer_did_show_question.remove(self.show_question_)
+        reviewer_did_show_answer.remove(self.show_answer_)
+        reviewer_did_answer_card.remove(self.user_answer_card_)
         self.bridge.set_answer_checker_window(None)  # Bridge의 window 참조 제거
         super().closeEvent(event)
 
@@ -947,7 +949,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             del self.message_containers[request_id]
             logger.info(f"Removed old message container with request_id: {request_id}")
 
-    def on_prepare_card(self, card):
+    def prepare_card_(self, card: Card) -> None:
         """카드 준비 시 호출되는 핸들러"""
         if self.isVisible():
             try:
