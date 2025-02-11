@@ -22,7 +22,7 @@ def extract_difficulty(llm_response: str) -> str:
     
     try:
         # 코드 블록 마커 제거
-        cleaned_response = re.sub(r'```json\s*|\s*```', '', llm_response)
+        cleaned_response = re.sub(r'```(?:json)?\s*|\s*```', '', llm_response)
         
         # JSON 객체를 찾기 위한 정규식 패턴
         json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
