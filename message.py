@@ -127,7 +127,7 @@ class MessageManager:
         """리뷰 권장 메시지 생성"""
         return Message(
             content=f"Recommended review interval: {recommendation}",
-            message_type=MessageType.REVIEW
+            message_type=MessageType.DIFFICULTY_RECOMMENDATION
         )
         
     def create_welcome_message(self):

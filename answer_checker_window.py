@@ -433,8 +433,17 @@ class AnswerCheckerWindow(QDialog):
 
     def show_review_message(self):
         """리뷰 메시지를 표시합니다."""
-        review_msg = self.message_manager.create_review_message("기본 권장값")
-        self.append_to_chat(review_msg)
+        # 마지막 LLM 응답에서 난이도 추천 추출
+        last_response = self.bridge.get_last_response()
+        if last_response:
+            recommendation = self.bridge.extract_difficulty(last_response)
+            if recommendation:
+                review_msg = self.message_manager.create_review_message(recommendation)
+                self.append_to_chat(review_msg)
+            else:
+                logger.error("난이도 추천을 찾을 수 없습니다.")
+        else:
+            logger.error("LLM 응답을 찾을 수 없습니다.")
 
     def on_show_question(self, card):
         """새로운 질문이 표시될 때 호출됩니다."""
