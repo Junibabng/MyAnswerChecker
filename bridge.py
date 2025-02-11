@@ -208,7 +208,7 @@ class Bridge(QObject):
         self.start_time: float = 0.0
         self.elapsed_time: float = 0.0
         self.timer: Optional[QTimer] = None
-        self.answer_checker_window = None
+        self._answer_checker_window = None  # Changed from answer_checker_window to _answer_checker_window
         self.partial_response: str = ""
         self.message_containers: Dict[str, Dict[str, Any]] = {}
         self.llm_provider = None
@@ -669,16 +669,17 @@ class Bridge(QObject):
             if recommendation:
                 logger.debug(f"추출된 난이도 추천: {recommendation}")
                 
-                if self._answer_checker_window:
+                window = self.get_answer_checker_window()
+                if window and hasattr(window, 'message_manager'):
                     # Create and display difficulty message
-                    difficulty_message = self._answer_checker_window.message_manager.create_difficulty_message(recommendation)
-                    self._answer_checker_window.append_to_chat(difficulty_message)
-                    self._answer_checker_window.last_difficulty_message = difficulty_message
+                    difficulty_message = window.message_manager.create_difficulty_message(recommendation)
+                    window.append_to_chat(difficulty_message)
+                    window.last_difficulty_message = difficulty_message
                     
                     # Execute automatic difficulty evaluation
-                    self._answer_checker_window.follow_llm_suggestion()
+                    window.follow_llm_suggestion()
                 else:
-                    logger.warning("Answer Checker Window is not available for displaying difficulty message")
+                    logger.debug("Answer Checker Window not ready for displaying messages")  # Changed from warning to debug
 
             QMetaObject.invokeMethod(
                 self,
@@ -1180,10 +1181,17 @@ class Bridge(QObject):
         """답변에 걸린 시간을 반환합니다."""
         return self.elapsed_time if self.elapsed_time is not None else 0.0
 
-    def set_answer_checker_window(self, window):
+    def set_answer_checker_window(self, window) -> None:
         """AnswerCheckerWindow 참조를 설정합니다."""
         self._answer_checker_window = window
-        logger.debug("Answer Checker Window reference set")
+        if window:
+            logger.debug("Answer Checker Window reference set successfully")
+        else:
+            logger.debug("Answer Checker Window reference cleared")
+
+    def get_answer_checker_window(self):
+        """Returns the current AnswerCheckerWindow reference"""
+        return self._answer_checker_window
 
 logger.info("Bridge initialized")
 
