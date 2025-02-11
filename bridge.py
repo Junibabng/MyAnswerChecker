@@ -233,6 +233,7 @@ class Bridge(QObject):
         
         if answer_checker_window:
             answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
+            answer_checker_window.display_loading_animation(False)
         self._clear_request_data(request_id)
 
     def _clear_request_data(self, request_id):
@@ -245,6 +246,10 @@ class Bridge(QObject):
     def _process_complete_response(self, response_text):
         """완전한 응답을 처리하고 UI를 업데이트"""
         try:
+            # 로딩 애니메이션 숨기기
+            if answer_checker_window:
+                answer_checker_window.display_loading_animation(False)
+                
             logger.debug(f"응답 처리 시작:\n{response_text[:200]}...")
             
             # 코드 블록 마커 제거
@@ -349,6 +354,7 @@ class Bridge(QObject):
             # 새로운 메시지 컨테이너 생성
             if answer_checker_window:
                 answer_checker_window.create_message_container(request_id)
+                answer_checker_window.display_loading_animation(True)
         
         # Update buffer
         self.response_buffer[request_id] += chunk
@@ -357,6 +363,8 @@ class Bridge(QObject):
         # Handle timeout
         if wait_time > self.RESPONSE_TIMEOUT:
             self._handle_response_timeout(request_id, data_type)
+            if answer_checker_window:
+                answer_checker_window.display_loading_animation(False)
             return
         
         # 실시간으로 청크 업데이트
@@ -368,12 +376,15 @@ class Bridge(QObject):
             if self.is_complete_response(self.response_buffer[request_id]):
                 if self._process_complete_response(self.response_buffer[request_id]):
                     self._clear_request_data(request_id)
+                    if answer_checker_window:
+                        answer_checker_window.display_loading_animation(False)
         elif data_type in ["question", "joke", "edit_advice"]:
             try:
                 # JSON 파싱 시도
                 response_json = json.loads(self.response_buffer[request_id])
                 if answer_checker_window:
                     answer_checker_window.finalize_message(request_id, response_json, data_type)
+                    answer_checker_window.display_loading_animation(False)
                 self._clear_request_data(request_id)
             except json.JSONDecodeError:
                 # 아직 완성되지 않은 JSON이면 계속 누적
@@ -510,6 +521,8 @@ class Bridge(QObject):
                 if self.current_card_id == current_card.id:
                     # Skip evaluation if we've already evaluated this card
                     self.is_processing = False
+                    if answer_checker_window:
+                        answer_checker_window.display_loading_animation(False)
                     return
                 self.current_card_id = current_card.id
                 
@@ -525,6 +538,8 @@ class Bridge(QObject):
                 
                 card_content, card_answers, card_ord = self.get_card_content()
                 if not card_content:
+                    if answer_checker_window:
+                        answer_checker_window.display_loading_animation(False)
                     showInfo("Could not retrieve card information.")
                     response = json.dumps({"evaluation": "Card info error", "recommendation": "None", "answer": "", "reference": ""})
                     self.sendResponse.emit(response)
@@ -549,6 +564,8 @@ class Bridge(QObject):
                 thread.start()
             except Exception as e:
                 logger.exception("Error processing receiveAnswer: %s", e)
+                if answer_checker_window:
+                    answer_checker_window.display_loading_animation(False)
                 response = json.dumps({"evaluation": "Error occurred", "recommendation": "None", "answer": "", "reference": ""})
                 self.sendResponse.emit(response)
         finally:
@@ -863,6 +880,8 @@ class Bridge(QObject):
             
         except Exception as e:
             logger.exception("Error processing additional question: %s", e)
+            if answer_checker_window:
+                answer_checker_window.display_loading_animation(False)
             QMetaObject.invokeMethod(
                 self,
                 "sendQuestionResponse",

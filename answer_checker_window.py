@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QHBoxLayout, QInputDialog, QDoubleSpinBox, QSpinBox, QComboBox, QGroupBox, QWidget, QSizePolicy
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtCore import QTimer, Qt, QThread, QMetaObject, Q_ARG, pyqtSlot
+from PyQt6.QtCore import QTimer, Qt, QThread, QMetaObject, Q_ARG, pyqtSlot, pyqtSignal
 from PyQt6.QtWebChannel import QWebChannel
 from aqt import mw, gui_hooks
 from aqt.utils import showInfo
@@ -27,6 +27,9 @@ from aqt.reviewer import Reviewer
 logger = logging.getLogger(__name__)
 
 class AnswerCheckerWindow(QDialog):
+    # 시그널 정의 추가
+    message_rendered = pyqtSignal(str)  # 메시지 렌더링 완료 시그널
+    
     def __init__(self, bridge: Any, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.bridge = bridge
@@ -257,6 +260,42 @@ class AnswerCheckerWindow(QDialog):
             color: #666;
             font-size: 0.9em;
         }
+
+        /* 로딩 애니메이션 스타일 */
+        .loading-spinner {
+            padding: 10px;
+            text-align: center;
+        }
+        
+        .typing-indicator {
+            display: inline-flex;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .typing-indicator span {
+            height: 8px;
+            width: 8px;
+            background: #90949c;
+            border-radius: 50%;
+            margin: 0 2px;
+            display: inline-block;
+            animation: bounce 1.3s linear infinite;
+        }
+        
+        .typing-indicator span:nth-child(2) { animation-delay: 0.15s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.3s; }
+        
+        .loading-text {
+            color: #90949c;
+            font-size: 0.9em;
+            margin-top: 4px;
+        }
+        
+        @keyframes bounce {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-4px); }
+        }
         </style>
         </head>
         <body>
@@ -278,6 +317,9 @@ class AnswerCheckerWindow(QDialog):
         
         # 웰컴 메시지 표시 여부를 추적하는 플래그 추가
         self.welcome_message_shown = False
+
+        # 시그널 연결
+        self.message_rendered.connect(self._on_message_rendered)
 
     def initialize_webview(self) -> None:
         """WebView 초기화 및 설정"""
@@ -390,21 +432,33 @@ class AnswerCheckerWindow(QDialog):
                     behavior: 'smooth'
                 });
                 
-                // 백업 스크롤 (애니메이션이 실패할 경우)
-                setTimeout(() => {
-                    chatContainer.scrollTop = chatContainer.scrollHeight;
-                }, 100);
-                
-                return true;
+                // 메시지 ID를 반환하여 렌더링 완료를 추적
+                return div.firstChild.id || 'message-' + Date.now();
             }
-            return false;
+            return null;
         })();
         """ % html_content
         
         self.web_view.page().runJavaScript(
             script,
-            lambda result: logger.debug(f"Message append result: {'Success' if result else 'Failed'}")
+            lambda result: self._handle_message_rendered(result, message)
         )
+
+    def _handle_message_rendered(self, message_id: str, message: Message):
+        """메시지 렌더링 완료 처리"""
+        if message_id:
+            logger.debug(f"Message rendered with ID: {message_id}")
+            self.message_rendered.emit(message_id)
+        else:
+            logger.error("Failed to render message")
+
+    @pyqtSlot(str)
+    def _on_message_rendered(self, message_id: str):
+        """메시지 렌더링 완료 시 호출되는 슬롯"""
+        logger.debug(f"Message render completed: {message_id}")
+        if hasattr(self, '_pending_loading_animation') and self._pending_loading_animation:
+            self.display_loading_animation(True)
+            self._pending_loading_animation = False
 
     def _process_saved_messages(self):
         """저장된 메시지들을 처리합니다."""
@@ -499,8 +553,51 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def display_loading_animation(self, show):
         """Shows or hides the loading animation in the AI's response."""
-        # 로딩 애니메이션 기능 비활성화
-        pass
+        if not self.is_webview_ready:
+            logger.debug("WebView not ready, skipping loading animation")
+            return
+
+        script = """
+        (function() {
+            var chatContainer = document.querySelector('.chat-container');
+            var loadingId = 'loading-animation';
+            var existingLoader = document.getElementById(loadingId);
+            
+            if (%s) {
+                if (!existingLoader) {
+                    var loaderHtml = `
+                        <div id="${loadingId}" class="message-container">
+                            <div class="message">
+                                <div class="loading-spinner">
+                                    <div class="typing-indicator">
+                                        <span></span>
+                                        <span></span>
+                                        <span></span>
+                                    </div>
+                                    <div class="loading-text">답변을 생성하고 있습니다...</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    var div = document.createElement('div');
+                    div.innerHTML = loaderHtml;
+                    chatContainer.appendChild(div);
+                    chatContainer.scrollTo({
+                        top: chatContainer.scrollHeight,
+                        behavior: 'smooth'
+                    });
+                }
+            } else if (existingLoader) {
+                existingLoader.remove();
+            }
+            return true;
+        })();
+        """ % ('true' if show else 'false')
+        
+        self.web_view.page().runJavaScript(
+            script,
+            lambda result: logger.debug(f"Loading animation {'shown' if show else 'hidden'}: {result}")
+        )
 
     def update_timer_display(self, elapsed_time):
         """Updates the elapsed time in the UI."""
@@ -639,7 +736,10 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
         if user_answer == "":
             return
 
-        # 사용자 메시지를 Message 객체로 생성
+        # 로딩 애니메이션 표시 대기 설정
+        self._pending_loading_animation = True
+
+        # 사용자 메시지를 생성하고 표시
         user_message = Message(
             content=user_answer,
             message_type=MessageType.USER
@@ -697,15 +797,15 @@ Current Card ID: {self.bridge.current_card_id}
 Chat History Length: {len(self.bridge.conversation_history['messages'])}
 """)
             
+            # 로딩 애니메이션 표시 대기 설정
+            self._pending_loading_animation = True
+            
             # Display user question as Message object
             user_message = Message(
                 content=question,
                 message_type=MessageType.USER
             )
             self.append_to_chat(user_message)
-            
-            # 로딩 애니메이션 제거
-            # self.display_loading_animation(True)
             
             # Clear input field
             self.input_field.clear()
@@ -715,7 +815,7 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
             
         except Exception as e:
             logger.exception("Error in process_additional_question: %s", e)
-            # self.display_loading_animation(False) 라인 제거
+            self.display_loading_animation(False)
             self.show_error_message("질문 처리 중 오류가 발생했습니다.")
             self.is_processing = False
 
@@ -959,7 +1059,7 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
                 
                 question_message = self.message_manager.create_question_message(
                     content=self.markdown_to_html(card_content)
-                )  # 괄호 추가
+                )
                 logger.debug(f"Generated message HTML: {question_message.to_html()[:200]}...")
                 
                 self.clear_chat()
@@ -985,13 +1085,17 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             user_message = self.message_manager.create_user_message(content=answer_text)
             self.append_to_chat(user_message)
             
+            # 로딩 애니메이션 표시
+            self.display_loading_animation(True)
+            
             # LLM 응답 처리
             card_content, correct_answers, card_ord = self.bridge.get_card_content()
             if not card_content or not correct_answers:
                 self.show_error_message("카드 내용을 가져올 수 없습니다.")
+                self.display_loading_animation(False)
                 return
 
-            # LLM에 요청 보내기 - Bridge 클래스가 난이도 메시지 처리를 담당
+            # LLM에 요청 보내기
             self.bridge.llm_data = {
                 "card_content": card_content,
                 "user_answer": answer_text,
@@ -1008,3 +1112,4 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
             error_msg = f"답변 처리 중 오류 발생: {str(e)}"
             logging.error(error_msg)
             self.show_error_message(error_msg)
+            self.display_loading_animation(False)
