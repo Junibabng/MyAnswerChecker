@@ -1051,25 +1051,55 @@ Timestamp: {datetime.now().strftime('%H:%M:%S.%f')}
 
     def prepare_card_(self, card: Card) -> None:
         """카드 준비 시 호출되는 핸들러"""
-        if self.isVisible():
-            try:
-                logger.debug("=== Preparing card ===")
-                card_content, _, _ = self.bridge.get_card_content()
-                logger.debug(f"Card content: {card_content[:50]}...")  # 내용 일부 로깅
+        if not self.isVisible():
+            return
+            
+        try:
+            logger.debug("=== Preparing card ===")
+            
+            # 이전 카드와 동일한지 확인
+            if hasattr(self, 'last_card_id') and self.last_card_id == card.id:
+                logger.debug("Skipping duplicate card preparation")
+                return
                 
-                question_message = self.message_manager.create_question_message(
-                    content=self.markdown_to_html(card_content)
-                )
-                logger.debug(f"Generated message HTML: {question_message.to_html()[:200]}...")
+            self.last_card_id = card.id
+            
+            # WebView 상태 확인
+            if not self._check_webview_state():
+                logger.debug("WebView not ready, scheduling delayed preparation")
+                QTimer.singleShot(500, lambda: self.prepare_card_(card))
+                return
                 
+            card_content, _, _ = self.bridge.get_card_content()
+            if not card_content:
+                logger.error("Failed to get card content")
+                return
+                
+            logger.debug(f"Card content: {card_content[:50]}...")
+            
+            question_message = self.message_manager.create_question_message(
+                content=self.markdown_to_html(card_content)
+            )
+            logger.debug(f"Generated message HTML: {question_message.to_html()[:200]}...")
+            
+            # 채팅창 초기화 및 메시지 표시
+            def show_messages():
                 self.clear_chat()
-                # clear_chat 후 콜백으로 메시지 추가
-                def delayed_append():
-                    self.append_to_chat(question_message)
+                self.append_to_chat(question_message)
                 
-                QTimer.singleShot(300, delayed_append)  # 0.3초 딜레이 추가
-            except Exception as e:
-                self.show_error_message(f"카드 로드 실패: {str(e)}")
+                # 이전 난이도 메시지가 있으면 표시
+                if self.last_difficulty_message:
+                    QTimer.singleShot(100, lambda: self.append_to_chat(self.last_difficulty_message))
+                
+                # 입력 필드에 포커스
+                self.input_field.setFocus()
+            
+            # 적절한 딜레이 후 메시지 표시
+            QTimer.singleShot(300, show_messages)
+            
+        except Exception as e:
+            logger.exception("Error in prepare_card_: %s", str(e))
+            self.show_error_message(f"카드 로드 실패: {str(e)}")
 
     def process_answer(self, answer_text: str) -> None:
         """사용자 답변을 처리하고 LLM에 전송합니다."""

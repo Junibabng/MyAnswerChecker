@@ -7,9 +7,10 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 import random
 import re
-from typing import Optional, Any, Dict, List, Generator, Callable
+from typing import Optional, Any, Dict, List, Generator, Callable, TypeVar, Union, cast, Protocol
 import concurrent.futures
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 
 # Logging setup
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -171,15 +172,26 @@ class RetryWithExponentialBackoff:
             return None
         return wrapper
 
+@dataclass
+class RetryConfig:
+    max_retries: int = 3
+    base_delay: float = 1.0
+    max_delay: float = 8.0
+
+class APIResponse(Protocol):
+    """API 응답을 위한 프로토콜"""
+    status_code: int
+    text: str
+    json: Callable[[], Dict[str, Any]]
+
+# Define TypeVar for generic type
+T = TypeVar('T')
+
 class LLMProvider(ABC):
     """LLM 서비스 호출을 위한 추상 기본 클래스"""
-    def __init__(self):
-        self.retry_config = {
-            'max_retries': 3,
-            'base_delay': 1,
-            'max_delay': 8
-        }
-        self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+    def __init__(self) -> None:
+        self.retry_config: RetryConfig = RetryConfig()
+        self.thread_pool: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=3)
         self._setup_logging()
 
     def _setup_logging(self) -> None:
@@ -197,19 +209,19 @@ class LLMProvider(ABC):
         logger.addHandler(file_handler)
 
     @abstractmethod
-    def call_api(self, system_message, user_message, temperature=0.2):
+    def call_api(self, system_message: str, user_message: str, temperature: float = 0.2) -> str:
         """LLM API를 호출하여 응답을 받아옵니다."""
         pass
 
-    def _retry_with_exponential_backoff(self, func, *args, **kwargs):
+    def _retry_with_exponential_backoff(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         """지수 백오프를 사용한 재시도 로직"""
         retry_count = 0
-        last_error = None
+        last_error: Optional[Exception] = None
         
-        while retry_count < self.retry_config['max_retries']:
+        while retry_count < self.retry_config.max_retries:
             try:
                 logger.debug(
-                    f"API 요청 시도 {retry_count + 1}/{self.retry_config['max_retries']}\n"
+                    f"API 요청 시도 {retry_count + 1}/{self.retry_config.max_retries}\n"
                     f"Function: {func.__name__}\n"
                     f"Args: {args}\n"
                     f"Kwargs: {kwargs}"
@@ -222,19 +234,19 @@ class LLMProvider(ABC):
                 
                 error_context = {
                     'attempt': retry_count,
-                    'max_retries': self.retry_config['max_retries'],
+                    'max_retries': self.retry_config.max_retries,
                     'function': func.__name__,
                     'args': args,
                     'kwargs': kwargs
                 }
                 
-                if retry_count == self.retry_config['max_retries']:
+                if retry_count == self.retry_config.max_retries:
                     log_error(e, error_context)
                     raise APIConnectionError(f"API 연결 실패: {str(e)}")
                 
-                delay = min(self.retry_config['base_delay'] * (2 ** (retry_count - 1)), self.retry_config['max_delay'])
+                delay = min(self.retry_config.base_delay * (2 ** (retry_count - 1)), self.retry_config.max_delay)
                 logger.warning(
-                    f"API 호출 실패 (시도 {retry_count}/{self.retry_config['max_retries']})\n"
+                    f"API 호출 실패 (시도 {retry_count}/{self.retry_config.max_retries})\n"
                     f"Error: {str(e)}\n"
                     f"Delay: {delay}초 후 재시도"
                 )
@@ -242,84 +254,47 @@ class LLMProvider(ABC):
         
         if last_error:
             raise APIConnectionError(f"최대 재시도 횟수 초과: {str(last_error)}")
-        return None
+        return cast(T, None)
 
-    def _make_api_request(self, headers, data, url=None):
+    def _make_api_request(
+        self, 
+        headers: Dict[str, str], 
+        data: Dict[str, Any], 
+        url: Optional[str] = None
+    ) -> APIResponse:
         """API 요청을 보내고 응답을 받아옵니다."""
         try:
             if url is None:
-                url = f"{self.base_url}/v1/chat/completions"
-            
-            # API 키 마스킹 처리
-            masked_headers = headers.copy()
-            if 'Authorization' in masked_headers:
-                masked_headers['Authorization'] = re.sub(r' (sk-).*', r' \1****', masked_headers['Authorization'])
-            
-            masked_url = re.sub(r'(key=)([^&]+)', r'\1****', url)
-            
-            logger.debug(
-                "API 요청 시작:\n"
-                f"URL: {masked_url}\n"
-                f"Headers: {masked_headers}\n"
-                f"Data: {data}"
-            )
-                
-            response = requests.post(url, headers=headers, json=data, timeout=60)
-            
-            logger.debug(
-                "API 응답 수신:\n"
-                f"Status Code: {response.status_code}\n"
-                f"Response Headers: {dict(response.headers)}"
-            )
-            
-            if response.status_code == 401:
-                logger.error(f"인증 실패 - API 키 문제: {response.text}")
-                raise InvalidAPIKeyError("API 키가 유효하지 않습니다.")
-            elif response.status_code == 429:
-                logger.warning(f"요청 한도 초과: {response.text}")
-                raise APIConnectionError("API 요청 한도를 초과했습니다.")
-            elif response.status_code == 500:
-                logger.error(f"서버 내부 오류: {response.text}")
-                raise APIConnectionError("AI 서버에 일시적인 문제가 발생했습니다.")
-            elif response.status_code == 503:
-                logger.error(f"서비스 불가: {response.text}")
-                raise APIConnectionError("AI 서버가 일시적으로 응답하지 않습니다.")
-            elif response.status_code != 200:
-                logger.error(
-                    f"예기치 않은 상태 코드: {response.status_code}\n"
-                    f"Response: {response.text}"
-                )
-                raise APIConnectionError(f"AI 서버 오류 (상태 코드: {response.status_code})")
-            
-            response.raise_for_status()
-            response_json = response.json()
-            
-            logger.debug(f"API 응답 내용: {response_json}")
-            return response_json
-            
-        except requests.exceptions.Timeout as e:
-            log_error(e, {'url': url, 'timeout': 60})
-            raise APIConnectionError("요청 시간이 초과되었습니다.")
-        except requests.exceptions.ConnectionError as e:
-            log_error(e, {'url': url})
-            raise APIConnectionError("서버에 연결할 수 없습니다.")
-        except requests.exceptions.RequestException as e:
-            log_error(e, {'url': url, 'response_text': getattr(e.response, 'text', None)})
-            raise APIConnectionError(f"요청 중 오류가 발생했습니다.")
-        except ValueError as e:
-            log_error(e, {'response_text': response.text})
-            raise APIResponseError("응답을 처리할 수 없습니다.")
-        except Exception as e:
-            log_error(e, {'url': url, 'response': locals().get('response')})
-            raise
+                raise ValueError("API URL이 지정되지 않았습니다.")
 
-    def _execute_async(self, func: Callable, *args: Any, **kwargs: Any) -> Future:
-        """비동기 실행 헬퍼 메서드"""
+            response = requests.post(url, headers=headers, json=data)
+            response.raise_for_status()
+            return response
+
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 401:
+                raise InvalidAPIKeyError("API 키가 올바르지 않습니다")
+            elif response.status_code == 429:
+                raise APIConnectionError("API 호출 한도를 초과했습니다")
+            else:
+                raise APIConnectionError(f"HTTP 오류 발생: {str(e)}")
+
+        except requests.exceptions.ConnectionError as e:
+            raise APIConnectionError(f"서버 연결 실패: {str(e)}")
+
+        except requests.exceptions.Timeout as e:
+            raise APIConnectionError(f"요청 시간 초과: {str(e)}")
+
+        except requests.exceptions.RequestException as e:
+            raise APIConnectionError(f"API 요청 중 오류 발생: {str(e)}")
+
+    def _execute_async(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> Future[T]:
+        """비동기 작업 실행"""
         return self.thread_pool.submit(func, *args, **kwargs)
 
     def cleanup(self) -> None:
         """리소스 정리"""
-        self.thread_pool.shutdown(wait=False)
+        self.thread_pool.shutdown(wait=True)
 
 class OpenAIProvider(LLMProvider):
     """OpenAI API를 사용하는 LLM 프로바이더"""
@@ -373,6 +348,7 @@ class OpenAIProvider(LLMProvider):
             raise
 
     def generate_response(self, messages, temperature=None):
+        """API 응답을 생성하고 처리합니다."""
         try:
             # temperature가 None이면 클래스의 temperature 값 사용
             if temperature is None:
@@ -391,7 +367,7 @@ class OpenAIProvider(LLMProvider):
                 "temperature": temperature
             }
 
-            # URL 생성 부분 추가
+            # URL 생성
             url = f"{self.base_url}/v1/chat/completions"
             # URL 마스킹 처리
             masked_url = re.sub(r'(key=)([^&]+)', r'\1****', url) if 'key=' in url else url
@@ -403,18 +379,26 @@ class OpenAIProvider(LLMProvider):
                 f"Message Count: {len(messages)}"
             )
 
-            result = self._make_api_request(headers, payload, url)
+            response = self._make_api_request(headers, payload, url)
             
-            if not result.get('choices'):
-                logger.error(f"응답에 choices 필드 없음: {result}")
-                raise APIResponseError("AI가 응답을 생성하지 못했습니다.")
-                
-            response_content = result['choices'][0]['message']['content'].strip()
-            logger.debug(f"생성된 응답: {response_content[:200]}...")
+            # 응답 처리
+            if response.status_code != 200:
+                logger.error(f"API returned non-200 status code: {response.status_code}")
+                raise APIConnectionError(f"API returned status code {response.status_code}")
+
+            result = response.json()
             
-            return response_content
+            # OpenAI API response format
+            if isinstance(result, dict):
+                if 'choices' in result and result['choices']:
+                    content = result['choices'][0]['message']['content'].strip()
+                    logger.debug(f"생성된 응답: {content[:200]}...")
+                    return content
+                    
+            logger.error(f"Unexpected API response format: {result}")
+            raise APIConnectionError("응답 형식이 올바르지 않습니다.")
             
-        except (KeyError, IndexError) as e:
+        except (ValueError, KeyError, AttributeError) as e:
             error_context = {
                 'result': locals().get('result'),
                 'model': self.model_name,
@@ -426,7 +410,7 @@ class OpenAIProvider(LLMProvider):
             error_context = {
                 'model': self.model_name,
                 'temperature': temperature,
-                'message_count': len(messages)
+                'message_count': len(messages) if 'messages' in locals() else 0
             }
             log_error(e, error_context)
             raise APIConnectionError("예기치 않은 오류가 발생했습니다.")

@@ -8,7 +8,7 @@ from datetime import datetime
 import time
 import random
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Dict, List, Generator, Callable
+from typing import Optional, Any, Dict, List, Generator, Callable, TypeVar, Union, cast
 
 from aqt import mw, gui_hooks
 from aqt.utils import showInfo, tooltip
@@ -75,7 +75,9 @@ class LLMProvider(ABC):
         """LLM API를 호출하여 응답을 받아옵니다."""
         pass
 
-def setup_webchannel(bridge, web):
+T = TypeVar('T')
+
+def setup_webchannel(bridge: Bridge, web: QWebEngineView) -> None:
     """Sets up QWebChannel to enable communication between JavaScript and Python."""
     try:
         channel = QWebChannel()
@@ -89,12 +91,12 @@ def setup_webchannel(bridge, web):
         logger.exception("Error setting up QWebChannel: %s", e)
         message_manager.handle_response_error("Error setting up QWebChannel", str(e))
 
-def initialize_addon():
+def initialize_addon() -> None:
     """Initialize the addon"""
     global bridge, chat_service, answer_checker_window
     try:
         # 설정 로드
-        settings = settings_manager.load_settings()
+        settings: Dict[str, Any] = settings_manager.load_settings()
         mw.llm_addon_settings = settings
         
         # Instantiate chat_service using provider factory
@@ -114,7 +116,7 @@ def initialize_addon():
         logger.exception("Error initializing addon: %s", e)
         raise
 
-def add_menu():
+def add_menu() -> None:
     """Add Answer Checker menu to Anki main menubar"""
     try:
         # 기존 메뉴 제거
@@ -128,7 +130,7 @@ def add_menu():
         mw.form.menubar.addMenu(answer_checker_menu)
 
         # 메뉴 항목 추가
-        menu_items = [
+        menu_items: List[Tuple[str, Callable[[], None]]] = [
             ("Open Answer Checker", open_answer_checker_window),
             ("Settings", openSettingsDialog)
         ]
@@ -143,7 +145,7 @@ def add_menu():
         logger.error(f"Error adding menu items: {str(e)}")
         raise
 
-def open_answer_checker_window():
+def open_answer_checker_window() -> None:
     """Opens the answer checker window"""
     global answer_checker_window, bridge
     try:
@@ -157,7 +159,7 @@ def open_answer_checker_window():
         logger.error(f"Error opening Answer Checker: {str(e)}")
         showInfo(f"Error opening Answer Checker: {str(e)}")
 
-def on_profile_loaded():
+def on_profile_loaded() -> None:
     """프로필이 로드될 때 호출되는 함수입니다."""
     global bridge, answer_checker_window, message_manager
     
@@ -183,27 +185,53 @@ def on_profile_loaded():
 # Register hooks
 gui_hooks.profile_did_open.append(on_profile_loaded)
 
-def on_prepare_card(card):
+def on_prepare_card(card: Card) -> None:
     """카드가 표시될 때 호출되는 함수입니다."""
     global answer_checker_window
-    if answer_checker_window and answer_checker_window.isVisible():
-        try:
-            card_content, _, _ = answer_checker_window.bridge.get_card_content()
-            if card_content:
-                # MessageManager를 통한 메시지 생성
-                question_message = answer_checker_window.message_manager.create_question_message(
-                    content=answer_checker_window.markdown_to_html(card_content)
-                )
-                
-                answer_checker_window.clear_chat()
-                answer_checker_window.append_to_chat(question_message)
-                
-                if not answer_checker_window.last_difficulty_message:
-                    QTimer.singleShot(100, answer_checker_window.show_review_message)
+    if not answer_checker_window or not answer_checker_window.isVisible():
+        return
+        
+    try:
+        # 이전 카드와 동일한지 확인
+        if hasattr(answer_checker_window, 'last_prepared_card_id') and answer_checker_window.last_prepared_card_id == card.id:
+            logger.debug("Skipping duplicate card preparation in on_prepare_card")
+            return
+            
+        answer_checker_window.last_prepared_card_id = card.id
+        
+        # WebView 상태 확인
+        if not answer_checker_window._check_webview_state():
+            logger.debug("WebView not ready in on_prepare_card, scheduling delayed preparation")
+            QTimer.singleShot(500, lambda: on_prepare_card(card))
+            return
+            
+        card_content, _, _ = answer_checker_window.bridge.get_card_content()
+        if not card_content:
+            logger.error("Failed to get card content in on_prepare_card")
+            return
+            
+        # MessageManager를 통한 메시지 생성
+        question_message = answer_checker_window.message_manager.create_question_message(
+            content=answer_checker_window.markdown_to_html(card_content)
+        )
+        
+        def show_messages() -> None:
+            if not answer_checker_window:
+                return
+            answer_checker_window.clear_chat()
+            answer_checker_window.append_to_chat(question_message)
+            
+            if not answer_checker_window.last_difficulty_message:
+                QTimer.singleShot(100, answer_checker_window.show_review_message)
             
             answer_checker_window.input_field.setFocus()
-            
-        except Exception as e:
+        
+        # 적절한 딜레이 후 메시지 표시
+        QTimer.singleShot(300, show_messages)
+        
+    except Exception as e:
+        logger.exception("Error in on_prepare_card: %s", str(e))
+        if answer_checker_window:
             answer_checker_window.show_error_message(f"문제 표시 중 오류: {str(e)}")
 
 # Register hooks

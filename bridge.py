@@ -30,6 +30,9 @@ from .settings_manager import settings_manager
 from .providers.provider_factory import get_provider
 from aqt.qt import QSettings
 from .auto_difficulty import extract_difficulty  # 재정의
+from typing import Optional, Dict, Any, List, Tuple, Union, cast
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 # Logging setup
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -160,10 +163,20 @@ class InvalidAPIKeyError(BridgeError):
     def __init__(self, message):
         super().__init__(message, "API 키가 설정되지 않았습니다.")
 
+@dataclass
+class CardContent:
+    """카드 내용을 담는 데이터 클래스"""
+    question: str
+    answer: str
+    note_type: str
+
 class Bridge(QObject):
+    """브릿지 클래스 - Python과 JavaScript 간의 통신을 담당"""
+    
     # Constants
-    RESPONSE_TIMEOUT = 10  # seconds
-    DEFAULT_TEMPERATURE = 0.2
+    RESPONSE_TIMEOUT: int = 10  # seconds
+    DEFAULT_TEMPERATURE: float = 0.2
+    MAX_CONTEXT_LENGTH: int = 10  # Maximum number of messages to keep in context
     
     # Signal definitions
     sendResponse = pyqtSignal(str)
@@ -172,10 +185,11 @@ class Bridge(QObject):
     stream_data_received = pyqtSignal(str, str, str)
     model_info_changed = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._initialize_attributes()
         self._setup_timer()
+        self.thread_pool = ThreadPoolExecutor(max_workers=3)
         
         # 설정 매니저에 옵저버로 등록
         settings_manager.add_observer(self)
@@ -186,254 +200,105 @@ class Bridge(QObject):
         
         self.partial_response = ""
         self._answer_checker_window = None  # 추가: AnswerCheckerWindow 참조 저장
+        self.max_context_length = self.MAX_CONTEXT_LENGTH  # Add this line
         logger.info("Bridge initialized")
 
-    def _initialize_attributes(self):
-        """Initialize all instance attributes"""
-        self.llm_data = {}
-        self.last_response = None
-        self.last_user_answer = None
-        self.last_elapsed_time = None
-        self.timer_start_time = None
-        self.elapsed_time = None
+    def _initialize_attributes(self) -> None:
+        """속성 초기화"""
+        self.start_time: float = 0.0
+        self.elapsed_time: float = 0.0
+        self.timer: Optional[QTimer] = None
+        self.answer_checker_window = None
+        self.partial_response: str = ""
+        self.message_containers: Dict[str, Dict[str, Any]] = {}
         self.llm_provider = None
-        self.response_buffer = {}
-        self.response_wait_timers = {}
-        self.conversation_history = {
+        self.is_processing: bool = False
+        self.current_card_id: Optional[int] = None
+        self.conversation_history: Dict[str, Any] = {
             'messages': [],
             'card_context': None,
             'current_card_id': None
         }
-        self.max_context_length = 10  # 최대 대화 기록 수
-        self.current_card_id = None    # Add this line
-        self.is_processing = False      # Add this line
+        self.last_response: Optional[str] = None
+        self.last_user_answer: Optional[str] = None
+        self.last_elapsed_time: Optional[float] = None
+        self.update_llm_provider()
 
-    def _setup_timer(self):
-        """Setup timer with configurations"""
-        self.timer = QTimer(self)
+    def _setup_timer(self) -> None:
+        """타이머 설정"""
+        self.timer = QTimer()
         self.timer.timeout.connect(self.update_timer)
-        self.timer_interval = 500  # 0.5 seconds
-        self.timer.setInterval(self.timer_interval)
+        self.timer.setInterval(100)  # 100ms 간격으로 업데이트
 
-    def _handle_response_timeout(self, request_id, data_type="response"):
-        """Handle timeout for responses"""
-        logger.error(f"Response timeout for {data_type} request {request_id}")
-        error_message = "응답 시간이 초과되었습니다."
-        help_text = "인터넷 연결을 확인하고 다시 시도해 주세요."
-        
-        error_html = f"""
-        <div class="system-message-container error">
-            <div class="system-message">
-                <p class="error-message" style="color: #e74c3c; margin-bottom: 8px;">{error_message}</p>
-                <p class="help-text" style="color: #666; font-size: 0.9em;">{help_text}</p>
-            </div>
-            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-        </div>
-        """
-        
-        if answer_checker_window:
-            answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
-            answer_checker_window.display_loading_animation(False)
+    def _handle_response_timeout(self, request_id: str, data_type: str = "response") -> None:
+        """응답 시간 초과 처리"""
+        error_msg = "응답 시간이 초과되었습니다."
+        self.handle_response_error(error_msg, f"Request {request_id} timed out")
         self._clear_request_data(request_id)
 
-    def _clear_request_data(self, request_id):
-        """Clear request related data"""
-        if request_id in self.response_buffer:
-            del self.response_buffer[request_id]
-        if request_id in self.response_wait_timers:
-            del self.response_wait_timers[request_id]
+    def _clear_request_data(self, request_id: str) -> None:
+        """요청 데이터 정리"""
+        if request_id in self.message_containers:
+            del self.message_containers[request_id]
 
-    def _process_complete_response(self, response_text):
-        """완전한 응답을 처리하고 UI를 업데이트"""
+    def _process_complete_response(self, response_text: str) -> None:
+        """완성된 응답 처리"""
         try:
-            # 로딩 애니메이션 숨기기
-            if answer_checker_window:
-                answer_checker_window.display_loading_animation(False)
+            response_json = self.extract_json_from_text(response_text)
+            if not response_json:
+                raise ResponseProcessingError("응답을 처리할 수 없습니다.")
                 
-            logger.debug(f"응답 처리 시작:\n{response_text[:200]}...")
-            
-            # 코드 블록 마커 제거
-            cleaned_response = re.sub(r'```json\s*|\s*```', '', response_text)
-            
-            # JSON 객체를 찾기 위한 정규식 패턴
-            json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
-            
-            # 모든 JSON 객체 찾기
-            json_matches = list(re.finditer(json_pattern, cleaned_response, re.DOTALL))
-            
-            # 마지막 매치부터 역순으로 검사
-            json_str = None
-            response_json = None
-            
-            for match in reversed(json_matches):
-                try:
-                    json_str = match.group(0)
-                    data = json.loads(json_str)
-                    
-                    # recommendation 필드가 있고 값이 유효한지 확인
-                    if "recommendation" in data:
-                        recommendation = data["recommendation"].strip()
-                        valid_recommendations = [DIFFICULTY_AGAIN, DIFFICULTY_HARD, DIFFICULTY_GOOD, DIFFICULTY_EASY]
-                        
-                        if recommendation in valid_recommendations:
-                            response_json = data
-                            logger.debug(f"유효한 난이도 추출 성공: {recommendation}")
-                            break
-                        else:
-                            logger.debug(f"유효하지 않은 난이도 값: {recommendation}")
-                            continue
-                            
-                except json.JSONDecodeError:
-                    logger.debug("유효하지 않은 JSON 형식, 다음 매치 시도")
-                    continue
-                except Exception as e:
-                    logger.debug(f"JSON 처리 중 오류 발생: {str(e)}")
-                    continue
-            
-            if not json_str or not response_json:
-                logger.error("유효한 JSON을 찾을 수 없습니다.")
-                raise ResponseProcessingError("응답 형식이 올바르지 않습니다.")
-            
-            # 응답 텍스트에서 JSON 부분 제거
-            display_text = cleaned_response.replace(json_str, "").strip()
-            
-            # JSON 부분이 제거된 텍스트가 있으면 마크다운 변환
-            if display_text:
-                processed_content = self.markdown_to_html(display_text)
-            else:
-                processed_content = "평가가 완료되었습니다."
-            
-            if self._answer_checker_window:
-                html_content = self._generate_response_html(response_json)
-                self._answer_checker_window.web_view.setHtml(self._answer_checker_window.default_html + html_content)
-                logger.info("UI 업데이트 완료")
-            return True
+            html_response = self._generate_response_html(response_json)
+            self.sendResponse.emit(html_response)
             
         except json.JSONDecodeError as e:
-            logger.warning(
-                "불완전한 JSON 응답:\n"
-                f"Current Buffer: {self.partial_response[:200]}...\n"
-                f"New Text: {response_text[:200]}..."
-            )
-            self.partial_response += response_text
-            return False
-            
-        except ResponseProcessingError as e:
-            log_error(e, {
-                'response_text': response_text,
-                'partial_response': self.partial_response
-            })
-            self._show_error_message(str(e))
-            self.partial_response = ""
-            return True
+            self.handle_response_error("JSON 파싱 오류", str(e))
+        except Exception as e:
+            self.handle_response_error("응답 처리 오류", str(e))
 
-    def _generate_response_html(self, response_json):
-        """Generate HTML content from response JSON"""
-        evaluation = response_json.get("evaluation", "No evaluation")
-        recommendation = response_json.get("recommendation", "No recommendation")
-        answer = response_json.get("answer", "")
-        reference = response_json.get("reference", "")
-        
-        return f"""
-        <h2>Evaluation Results</h2>
-        <p class="evaluation"><strong>Evaluation:</strong> {self.markdown_to_html(evaluation)}</p>
-        <p class="recommendation"><strong>Recommendation:</strong> {self.markdown_to_html(recommendation)}</p>
-        <div class="answer"><strong>Answer:</strong> <p>{self.markdown_to_html(answer)}</p></div>
-        <div class="reference"><strong>Reference:</strong> <p>{self.markdown_to_html(reference)}</p></div>
-        """
+    def _generate_response_html(self, response_json: Dict[str, Any]) -> str:
+        """HTML 응답 생성"""
+        try:
+            content = response_json.get("content", "")
+            return f"""
+            <div class="response-container">
+                <div class="response-content">{content}</div>
+                <div class="response-time">{datetime.now().strftime("%p %I:%M")}</div>
+            </div>
+            """
+        except Exception as e:
+            logger.error(f"HTML 생성 오류: {str(e)}")
+            raise ResponseProcessingError("HTML 생성 중 오류가 발생했습니다.")
 
     @pyqtSlot(str, str, str)
-    def update_response_chunk(self, chunk, request_id, data_type):
-        """Updates the response in the webview with a chunk of data."""
-        logger.debug(f"Received chunk for {request_id}: {chunk}")
-        
-        # Initialize buffer and timer if needed
-        if request_id not in self.response_buffer:
-            self.response_buffer[request_id] = ""
-            self.response_wait_timers[request_id] = time.time()
-            # 새로운 메시지 컨테이너 생성
-            if answer_checker_window:
-                answer_checker_window.create_message_container(request_id)
-                answer_checker_window.display_loading_animation(True)
-        
-        # Update buffer
-        self.response_buffer[request_id] += chunk
-        wait_time = time.time() - self.response_wait_timers[request_id]
-        
-        # Handle timeout
-        if wait_time > self.RESPONSE_TIMEOUT:
-            self._handle_response_timeout(request_id, data_type)
-            if answer_checker_window:
-                answer_checker_window.display_loading_animation(False)
-            return
-        
-        # 실시간으로 청크 업데이트
-        if answer_checker_window:
-            answer_checker_window.update_message_chunk(request_id, chunk, data_type)
-        
-        # Process complete response
-        if data_type == "response":
-            if self.is_complete_response(self.response_buffer[request_id]):
-                if self._process_complete_response(self.response_buffer[request_id]):
-                    self._clear_request_data(request_id)
-                    if answer_checker_window:
-                        answer_checker_window.display_loading_animation(False)
-        elif data_type in ["question", "joke", "edit_advice"]:
-            try:
-                # JSON 파싱 시도
-                response_json = json.loads(self.response_buffer[request_id])
-                if answer_checker_window:
-                    answer_checker_window.finalize_message(request_id, response_json, data_type)
-                    answer_checker_window.display_loading_animation(False)
-                self._clear_request_data(request_id)
-            except json.JSONDecodeError:
-                # 아직 완성되지 않은 JSON이면 계속 누적
-                pass
-
-    def is_complete_response(self, response_text):
-        """
-        응답이 완전한지, 즉 유효한 recommendation을 포함한 JSON이 있는지 확인합니다.
-        """
+    def update_response_chunk(self, chunk: str, request_id: str, data_type: str) -> None:
+        """응답 청크 업데이트"""
         try:
-            # 코드 블록 마커 제거
-            cleaned_response = re.sub(r'```json\s*|\s*```', '', response_text)
+            if request_id not in self.message_containers:
+                self.message_containers[request_id] = {
+                    'content': '',
+                    'container_id': f'message-{request_id}'
+                }
             
-            # JSON 객체를 찾기 위한 정규식 패턴
-            json_pattern = r'\{(?:[^{}]|{[^{}]*})*\}'
+            container = self.message_containers[request_id]
+            container['content'] += chunk
             
-            # 모든 JSON 객체 찾기
-            json_matches = list(re.finditer(json_pattern, cleaned_response, re.DOTALL))
-            
-            # 마지막 매치부터 역순으로 검사
-            for match in reversed(json_matches):
-                try:
-                    json_str = match.group(0)
-                    data = json.loads(json_str)
-                    
-                    # recommendation 필드가 있고 값이 유효한지 확인
-                    if "recommendation" in data:
-                        recommendation = data["recommendation"].strip()
-                        valid_recommendations = [DIFFICULTY_AGAIN, DIFFICULTY_HARD, DIFFICULTY_GOOD, DIFFICULTY_EASY]
-                        
-                        if recommendation in valid_recommendations:
-                            logger.debug(f"유효한 난이도 추출 성공: {recommendation}")
-                            return True
-                        else:
-                            logger.debug(f"유효하지 않은 난이도 값: {recommendation}")
-                            continue
-                            
-                except json.JSONDecodeError:
-                    logger.debug("유효하지 않은 JSON 형식, 다음 매치 시도")
-                    continue
-                except Exception as e:
-                    logger.debug(f"JSON 처리 중 오류 발생: {str(e)}")
-                    continue
-            
-            logger.debug("유효한 난이도 추천을 찾을 수 없습니다.")
-            return False
-            
+            if self.is_complete_response(container['content']):
+                self._process_complete_response(container['content'])
+                self._clear_request_data(request_id)
+            else:
+                self.stream_data_received.emit(chunk, request_id, data_type)
+                
         except Exception as e:
-            logger.error(f"응답 완성 여부 확인 중 오류 발생: {str(e)}")
+            self.handle_response_error("청크 처리 오류", str(e))
+
+    def is_complete_response(self, response_text: str) -> bool:
+        """응답이 완성되었는지 확인"""
+        try:
+            # JSON 완성 여부 확인
+            json_data = self.extract_json_from_text(response_text)
+            return bool(json_data and 'content' in json_data)
+        except:
             return False
 
     def update_llm_provider(self, settings=None):
@@ -488,7 +353,7 @@ class Bridge(QObject):
 
     def start_timer(self):
         """Starts the timer."""
-        self.timer_start_time = datetime.now()
+        self.start_time = datetime.now().timestamp()
         self.timer.start()
         logger.debug("Timer started")
 
@@ -496,16 +361,15 @@ class Bridge(QObject):
         """Stops the timer and returns the elapsed time."""
         if self.timer.isActive():
             self.timer.stop()
-            elapsed_seconds = (datetime.now() - self.timer_start_time).total_seconds()
-            self.elapsed_time = int(elapsed_seconds)
+            self.elapsed_time = (datetime.now() - datetime.fromtimestamp(self.start_time)).total_seconds()
             logger.debug(f"Timer stopped. Elapsed time: {self.elapsed_time} seconds")
             return self.elapsed_time
         return None
 
     def update_timer(self):
         """Updates the timer based on real time."""
-        if self.timer_start_time:
-            elapsed_seconds = (datetime.now() - self.timer_start_time).total_seconds()
+        if self.start_time:
+            elapsed_seconds = (datetime.now() - datetime.fromtimestamp(self.start_time)).total_seconds()
             self.timer_signal.emit(str(int(elapsed_seconds)))
 
     @pyqtSlot(str)
