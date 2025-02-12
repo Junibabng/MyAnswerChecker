@@ -171,12 +171,37 @@ class AnswerCheckerWindow(QDialog):
 
         .question-message {
             background-color: #ffffff;
+            padding: 12px 16px;
         }
 
-        .question-message h3 {
-            margin: 0 0 8px 0;
+        .question-content {
+            font-size: 14px;
+            line-height: 1.6;
             color: #333;
-            font-size: 15px;
+            margin: 0;
+            padding: 0;
+        }
+
+        .question-content strong,
+        .question-content b {
+            font-weight: bold;
+            color: #000;
+            background-color: #fff3cd;
+            padding: 0 2px;
+        }
+
+        .question-content u {
+            text-decoration: underline;
+        }
+
+        .question-content br {
+            display: block;
+            margin: 4px 0;
+            content: "";
+        }
+
+        .question-content br + br {
+            display: none;
         }
 
         .difficulty-recommendation-message {

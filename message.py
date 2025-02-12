@@ -59,10 +59,7 @@ class Message:
             """
         
         elif self.message_type == MessageType.QUESTION:
-            return f"""
-            <h3>Current Question</h3>
-            <p>{self.content}</p>
-            """
+            return f"""<div class="question-content">{self.content}</div>"""
         
         elif self.message_type == MessageType.DIFFICULTY_RECOMMENDATION:
             return self.content

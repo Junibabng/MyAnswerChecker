@@ -996,9 +996,10 @@ class Bridge(QObject):
 
     def _extract_question(self, card):
         """Extract question from basic card"""
-        question_soup = BeautifulSoup(card.q(), 'html.parser')
+        question_html = card.q()
+        question_soup = BeautifulSoup(question_html, 'html.parser')
         self._remove_tags(question_soup, ['style', 'script'])
-        return question_soup.get_text(separator=' ', strip=True)
+        return str(question_soup)
 
     def _extract_answer(self, card):
         """Extract answer from basic card"""
