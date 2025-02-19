@@ -509,7 +509,13 @@ class GeminiProvider(LLMProvider):
                 "contents": [
                     {
                         "role": "user",
-                        "parts": [{"text": combined_message}]
+                        "parts": [{"text": f"{message['content']}\n"}]
+                    }
+                ],
+                "system_instruction":{"parts":[{"text": f"{self.system_prompt}\n\n"}]},
+                "tools": [
+                    {
+                        "googleSearch":{}
                     }
                 ],
                 "generationConfig": {
@@ -553,8 +559,9 @@ class GeminiProvider(LLMProvider):
                 f"Message Count: {len(messages)}"
             )
 
-            result = self._make_api_request(headers, data, url)
-            logger.debug(f"Raw API Response: {result}")
+            response = self._make_api_request(headers, data, url)
+            result = response.json()  # Response 객체에서 JSON 데이터 추출
+            logger.debug(f"Raw API Response: {result}")  # JSON 데이터 로깅
             
             if 'candidates' not in result:
                 logger.error("응답에 candidates 필드 없음")
@@ -567,7 +574,21 @@ class GeminiProvider(LLMProvider):
             candidate = result['candidates'][0]
             
             if 'content' in candidate and 'parts' in candidate['content']:
-                text = candidate['content']['parts'][0].get('text', '')
+                # 모든 parts의 텍스트를 결합
+                text = ''.join(part.get('text', '') for part in candidate['content']['parts'])
+                
+                # groundingMetadata에서 검색 링크 추출 및 추가
+                if 'groundingMetadata' in candidate:
+                    metadata = candidate['groundingMetadata']
+                    if 'groundingChunks' in metadata:
+                        links = []
+                        for chunk in metadata['groundingChunks']:
+                            if 'web' in chunk and 'uri' in chunk['web']:
+                                title = chunk['web'].get('title', chunk['web']['uri'])
+                                links.append(f"\n\n참고 링크: [{title}]({chunk['web']['uri']})")
+                        if links:
+                            text += '\n\n---' + ''.join(links)
+                            
             elif 'text' in candidate:
                 text = candidate['text']
             else:

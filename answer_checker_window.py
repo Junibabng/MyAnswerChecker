@@ -674,23 +674,37 @@ Time: {datetime.now().strftime('%H:%M:%S.%f')}
         try:
             self.display_loading_animation(False)
             
-            # JSON 객체 찾기
-            json_match = re.search(r'({[^{}]*"recommendation"[^{}]*})', response_json)
-            if not json_match:
-                logger.error("No JSON object found in response")
-                self.show_error_message("응답 형식이 올바르지 않습니다.")
-                return
+            # 코드블록 마커 처리
+            response_text = response_json
+            if "```json" in response_text:
+                # 코드블록 제거 및 JSON 추출
+                code_block_pattern = r"```(?:json)?\s*([\s\S]*?)\s*```"
+                code_block_match = re.search(code_block_pattern, response_text)
+                if code_block_match:
+                    json_str = code_block_match.group(1).strip()
+                    # 전체 코드블록을 응답에서 제거
+                    display_text = response_text.replace(code_block_match.group(0), "").strip()
+                else:
+                    # 코드블록 마커가 있지만 매치되지 않는 경우
+                    logger.error("Code block markers found but no valid JSON")
+                    self.show_error_message("응답 형식이 올바르지 않습니다.")
+                    return
+            else:
+                # 일반 JSON 객체 찾기
+                json_match = re.search(r'({[^{}]*"recommendation"[^{}]*})', response_text)
+                if not json_match:
+                    logger.error("No JSON object found in response")
+                    self.show_error_message("응답 형식이 올바르지 않습니다.")
+                    return
+                json_str = json_match.group(1)
+                display_text = response_text.replace(json_str, "").strip()
 
             try:
-                json_str = json_match.group(1)
                 parsed_json = json.loads(json_str)
             except json.JSONDecodeError:
                 logger.error("Invalid JSON format")
                 self.show_error_message("응답을 처리할 수 없습니다.")
                 return
-
-            # 응답 텍스트에서 JSON 부분 제거
-            display_text = response_json.replace(json_str, "").strip()
             
             # JSON 부분이 제거된 텍스트가 있으면 마크다운 변환
             if display_text:

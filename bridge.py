@@ -757,39 +757,37 @@ class Bridge(QObject):
     def extract_json_from_text(self, text):
         """Extracts the last JSON part from the text."""
         try:
-            # Remove code block markers and clean text
-            text = self._clean_text(text)
+            if not text:
+                return None
+
+            # 1. 코드 블록 마커가 있는 JSON 찾기
+            code_block_pattern = r'```(?:json)?\s*({[\s\S]*?})\s*```'
+            code_block_matches = re.finditer(code_block_pattern, text, re.IGNORECASE)
             
-            # Try to find JSON block with code block markers first
-            json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', text)
-            if json_match:
+            for match in code_block_matches:
                 try:
-                    json_str = json_match.group(1)
-                    json_str = self._normalize_json_string(json_str)
+                    json_str = match.group(1).strip()
                     parsed = json.loads(json_str)
                     if self._validate_json_fields(parsed):
                         return json_str
-                except:
-                    pass
+                except json.JSONDecodeError:
+                    continue
 
-            # If that fails, try to find any JSON-like structure
-            try:
-                # Find the last occurrence of a JSON-like structure
-                json_matches = list(re.finditer(r'{[\s\S]*?}', text))
-                if json_matches:
-                    for match in reversed(json_matches):
-                        try:
-                            json_str = match.group(0)
-                            json_str = self._normalize_json_string(json_str)
-                            parsed = json.loads(json_str)
-                            if self._validate_json_fields(parsed):
-                                return json_str
-                        except:
-                            continue
-            except:
-                pass
+            # 2. 일반 JSON 객체 찾기
+            json_pattern = r'({[^{}]*"recommendation"\s*:\s*"[^"]+"})'
+            json_matches = list(re.finditer(json_pattern, text))
+            
+            for match in reversed(json_matches):
+                try:
+                    json_str = match.group(1).strip()
+                    parsed = json.loads(json_str)
+                    if self._validate_json_fields(parsed):
+                        return json_str
+                except json.JSONDecodeError:
+                    continue
             
             return None
+
         except Exception as e:
             logger.error(f"Error in extract_json_from_text: {str(e)}")
             return None
@@ -1134,45 +1132,9 @@ class Bridge(QObject):
 
     def extract_difficulty(self, llm_response: str) -> str:
         """
-        LLM 응답에서 난이도 추천을 추출합니다.
-        
-        Args:
-            llm_response (str): LLM의 전체 응답 텍스트
-            
-        Returns:
-            str: 추출된 난이도 값 ("Again", "Hard", "Good", "Easy" 중 하나)
-                 추출 실패 시 빈 문자열 반환
+        auto_difficulty.py의 extract_difficulty 함수를 사용하여 난이도를 추출합니다.
         """
-        try:
-            if not llm_response:
-                logging.error("LLM 응답이 비어있습니다.")
-                return ""
-            
-            logging.debug(f"LLM 응답 처리 시작:\n{llm_response[:200]}...")
-            
-            # JSON 블록을 찾기 위한 정규식
-            pattern = r'\{[^{]*"recommendation"\s*:\s*"([^"]+)"[^}]*\}\s*$'
-            match = re.search(pattern, llm_response, re.DOTALL)
-            
-            if match:
-                recommendation = match.group(1).strip()
-                logging.debug(f"추출된 난이도: {recommendation}")
-                
-                # 유효한 난이도 값인지 확인
-                valid_recommendations = ["Again", "Hard", "Good", "Easy"]
-                if recommendation in valid_recommendations:
-                    return recommendation
-                else:
-                    logging.error(f"잘못된 난이도 값: {recommendation}")
-            else:
-                logging.error("추천 JSON 블록을 찾을 수 없습니다.")
-                logging.debug(f"응답의 마지막 부분:\n{llm_response[-200:]}")
-            
-            return ""
-            
-        except Exception as e:
-            logging.error(f"난이도 추출 중 오류 발생: {str(e)}")
-            return ""
+        return extract_difficulty(llm_response)
 
     def get_last_response(self) -> str:
         """마지막 LLM 응답을 반환합니다."""
