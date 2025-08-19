@@ -41,7 +41,8 @@ Here, you can configure the AI provider you wish to use. You must obtain your ow
 -   **API Key:** Securely enter your personal API key.
 
 
-![bandicam 2025-08-19 14-38-21-125](https://github.com/user-attachments/assets/8b8d95c2-c103-41b5-97f9-e2e7cfedd53e)
+![bandicam 2025-08-19 14-38-21-125](https://github.com/user-attachments/assets/ad17e9eb-3483-492b-a135-b52ffddf9cb9)
+
 ![bandicam 2025-08-19 14-38-11-031](https://github.com/user-attachments/assets/ce31cd1f-62e8-48ab-996e-4e5fcb3f59cc)
 
 ### Difficulty Settings
