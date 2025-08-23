@@ -4,6 +4,7 @@ import os
 import sys
 import threading
 import logging
+
 from aqt import mw, gui_hooks, QAction, QInputDialog, QMenu, QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox
 from aqt.utils import showInfo
 from bs4 import BeautifulSoup
@@ -25,6 +26,17 @@ import requests
 from datetime import datetime
 import time
 from aqt.qt import *
+# Optional sip import across PyQt versions; provide safe fallback
+try:
+    from PyQt6.sip import isdeleted as sip_isdeleted  # PyQt6 path
+except Exception:
+    try:
+        import sip as _sip  # PyQt5 path
+        sip_isdeleted = getattr(_sip, 'isdeleted', lambda obj: False)
+    except Exception:
+        def sip_isdeleted(obj):
+            return False
+
 from abc import ABC, abstractmethod
 from aqt.gui_hooks import (
     reviewer_will_end,
@@ -422,19 +434,26 @@ class Bridge(QObject):
     @pyqtSlot(str)
     def receiveAnswer(self, user_answer):
         """Processes the user's answer received from JavaScript and sends a response."""
+        # Ignore empty input (e.g., user pressed Enter on blank field to proceed)
+        if user_answer is None or str(user_answer).strip() == "":
+            logger.debug("Empty user input received; ignoring without processing.")
+            window = self.get_answer_checker_window()
+            if window and not sip_isdeleted(window):
+                try:
+                    window.display_loading_animation(False)
+                except Exception:
+                    pass
+            self.is_processing = False
+            return
+
         if self.is_processing:
             return
-            
+        # Mark as processing and do not reset here; we'll reset in process_answer finally
         self.is_processing = True
         try:
             current_card = mw.reviewer.card
             if current_card:
-                if self.current_card_id == current_card.id:
-                    # Skip evaluation if we've already evaluated this card
-                    self.is_processing = False
-                    if answer_checker_window:
-                        answer_checker_window.display_loading_animation(False)
-                    return
+                # Track the current card id but do not skip processing for same card.
                 self.current_card_id = current_card.id
                 
             logger.debug("Received answer from JS: %s", user_answer)
@@ -449,8 +468,9 @@ class Bridge(QObject):
                 
                 card_content, card_answers, card_ord = self.get_card_content()
                 if not card_content:
-                    if answer_checker_window:
-                        answer_checker_window.display_loading_animation(False)
+                    window = self.get_answer_checker_window()
+                    if window:
+                        window.display_loading_animation(False)
                     showInfo("Could not retrieve card information.")
                     response = json.dumps({"evaluation": "Card info error", "recommendation": "None", "answer": "", "reference": ""})
                     self.sendResponse.emit(response)
@@ -475,12 +495,14 @@ class Bridge(QObject):
                 thread.start()
             except Exception as e:
                 logger.exception("Error processing receiveAnswer: %s", e)
-                if answer_checker_window:
-                    answer_checker_window.display_loading_animation(False)
+                window = self.get_answer_checker_window()
+                if window:
+                    window.display_loading_animation(False)
                 response = json.dumps({"evaluation": "Error occurred", "recommendation": "None", "answer": "", "reference": ""})
                 self.sendResponse.emit(response)
         finally:
-            self.is_processing = False
+            # Keep is_processing True; it will be cleared in process_answer finally
+            pass
 
     def create_llm_message(self, card_content, card_answers, question, request_type):
         """Creates the message to be sent to the LLM API."""
@@ -713,18 +735,27 @@ class Bridge(QObject):
 
             # Extract recommendation and create difficulty message
             recommendation = self.extract_difficulty(response_text)
+            _schedule_ui = None
             if recommendation:
                 logger.debug(f"추출된 난이도 추천: {recommendation}")
-                
+
                 window = self.get_answer_checker_window()
                 if window and hasattr(window, 'message_manager'):
-                    # Create and display difficulty message
-                    difficulty_message = window.message_manager.create_difficulty_message(recommendation)
-                    window.append_to_chat(difficulty_message)
-                    window.last_difficulty_message = difficulty_message
-                    
-                    # Execute automatic difficulty evaluation
-                    window.follow_llm_suggestion()
+                    # Prepare UI update for later (after response is sent)
+                    def _update_ui():
+                        try:
+                            w = self.get_answer_checker_window()
+                            if not w or sip_isdeleted(w) or not hasattr(w, 'message_manager'):
+                                logger.debug("Answer Checker Window unavailable; skipping UI update")
+                                return
+                            difficulty_message = w.message_manager.create_difficulty_message(recommendation)
+                            w.append_to_chat(difficulty_message)
+                            w.last_difficulty_message = difficulty_message
+                            # Do NOT auto-follow to avoid race with reviewer navigation/close
+                            logger.debug("Auto-follow of LLM suggestion deferred; user can trigger manually.")
+                        except Exception as ui_e:
+                            logger.exception("Error updating UI with difficulty recommendation: %s", ui_e)
+                    _schedule_ui = _update_ui
                 else:
                     logger.debug("Answer Checker Window not ready for displaying messages")  # Changed from warning to debug
 
@@ -734,6 +765,9 @@ class Bridge(QObject):
                 Qt.ConnectionType.QueuedConnection,
                 Q_ARG(str, response_text)
             )
+            # After sending response, schedule difficulty UI if prepared
+            if _schedule_ui:
+                QTimer.singleShot(0, _schedule_ui)
         except Exception as e:
             logger.exception("Error processing OpenAI API: %s", e)
             error_response = json.dumps({
@@ -750,7 +784,20 @@ class Bridge(QObject):
                 Q_ARG(str, error_response)
             )
         finally:
-            self._clear_llm_data()
+            # Always clear flags and stop loading animation so UI doesn't get stuck
+            try:
+                self._clear_llm_data()
+            finally:
+                self.is_processing = False
+                # Stop loading animation on the UI thread to avoid crashes during navigation
+                def _stop_loading():
+                    try:
+                        w = self.get_answer_checker_window()
+                        if w and not sip_isdeleted(w):
+                            w.display_loading_animation(False)
+                    except Exception:
+                        pass
+                QTimer.singleShot(0, _stop_loading)
 
     def process_question(self, card_content, question, card_answers):
         """Generates an answer to an additional question."""
@@ -792,8 +839,9 @@ class Bridge(QObject):
             
         except Exception as e:
             logger.exception("Error processing additional question: %s", e)
-            if answer_checker_window:
-                answer_checker_window.display_loading_animation(False)
+            window = self.get_answer_checker_window()
+            if window:
+                window.display_loading_animation(False)
             QMetaObject.invokeMethod(
                 self,
                 "sendQuestionResponse",
@@ -1030,7 +1078,15 @@ class Bridge(QObject):
             if not question.strip():
                 raise CardContentError("Question content is empty.")
             if not answers:
-                raise CardContentError("Answer content is empty.")
+                # Fallback: try extracting all text if parsing after <hr id='answer'> failed
+                answer_soup = BeautifulSoup(card.a(), 'html.parser')
+                self._remove_tags(answer_soup, ['style', 'script'])
+                self._remove_fsrs_status(answer_soup)
+                fallback_answers = self._extract_all_text(answer_soup)
+                if fallback_answers:
+                    answers = fallback_answers
+                else:
+                    raise CardContentError("Answer content is empty.")
 
             return question, answers, card.ord
 
@@ -1079,7 +1135,7 @@ class Bridge(QObject):
                 text = current.strip()
                 if text:
                     answer_text.append(text)
-            elif current.name not in ['style', 'script', 'div']:
+            elif current.name not in ['style', 'script']:
                 text = current.get_text(strip=True)
                 if text:
                     answer_text.append(text)
@@ -1134,16 +1190,17 @@ class Bridge(QObject):
                 error_message = str(message)
                 help_text = "Please try again later."
                 logger.debug("일반 에러 메시지 처리")
-
-            if answer_checker_window:
-                answer_checker_window.show_error_message(error_message, help_text)
+            window = self.get_answer_checker_window()
+            if window:
+                window.show_error_message(error_message, help_text)
                 logger.info("에러 메시지 UI 업데이트 완료")
-                
+            
         except Exception as e:
             log_error(e, {'original_message': message})
             logger.error(f"에러 메시지 표시 중 오류 발생: {str(e)}")
-            if answer_checker_window:
-                answer_checker_window.show_error_message(
+            window = self.get_answer_checker_window()
+            if window:
+                window.show_error_message(
                     "An error occurred. Please try again later."
                 )
                 logger.info("기본 에러 메시지 UI 업데이트 완료")
@@ -1151,8 +1208,9 @@ class Bridge(QObject):
     def handle_response_error(self, error_message, error_detail):
         """Handles errors during response processing"""
         logger.error(f"{error_message}: {error_detail}")
-        if answer_checker_window:
-            answer_checker_window.show_error_message(error_message)
+        window = self.get_answer_checker_window()
+        if window:
+            window.show_error_message(error_message)
         QTimer.singleShot(0, lambda: showInfo(error_message))
 
     def update_config(self, new_settings):

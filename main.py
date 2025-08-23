@@ -120,6 +120,11 @@ def initialize_addon() -> None:
         # Answer Checker Window 초기화
         if answer_checker_window is None:
             answer_checker_window = AnswerCheckerWindow(bridge, mw)
+            # Ensure Bridge holds a reference to the window
+            try:
+                bridge.set_answer_checker_window(answer_checker_window)
+            except Exception:
+                pass
             
         logger.info("Addon initialized successfully")
     except Exception as e:

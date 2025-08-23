@@ -36,6 +36,13 @@ class AnswerCheckerWindow(QDialog):
     def __init__(self, bridge: Any, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.bridge = bridge
+        # Ensure bridge holds a reference to this window
+        try:
+            if hasattr(self.bridge, "set_answer_checker_window"):
+                self.bridge.set_answer_checker_window(self)
+        except Exception:
+            # Best-effort; avoid breaking init if bridge is not fully ready
+            pass
         self.setWindowTitle("MyAnswerChecker")
         self.setGeometry(300, 300, 800, 600)
         self.layout = QVBoxLayout(self)
@@ -1027,6 +1034,15 @@ Chat History Length: {len(self.bridge.conversation_history['messages'])}
             # 난이도 평가 실행
             ease = ease_mapping.get(recommendation)
             if ease:
+                # Ensure the reviewer is showing the answer (back) before rating
+                try:
+                    if mw.state == "review" and getattr(mw, "reviewer", None):
+                        reviewer = mw.reviewer
+                        # If currently on the question side, flip to the answer side first
+                        if getattr(reviewer, "state", None) == "question":
+                            reviewer._showAnswer()
+                except Exception as e:
+                    logging.debug(f"Failed to ensure answer side before rating: {e}")
                 reviewer._answerCard(ease)
                 logging.info(f"난이도 평가 완료: {recommendation} (ease: {ease})")
             
