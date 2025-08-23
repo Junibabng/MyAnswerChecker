@@ -8,7 +8,7 @@ from datetime import datetime
 import time
 import random
 from abc import ABC, abstractmethod
-from typing import Optional, Any, Dict, List, Generator, Callable, TypeVar, Union, cast
+from typing import Optional, Any, Dict, List, Generator, Callable, TypeVar, Union, cast, Tuple
 
 from aqt import mw, gui_hooks
 from aqt.utils import showInfo, tooltip
@@ -68,6 +68,10 @@ bridge = None
 answer_checker_window = None
 message_manager = MessageManager()
 chat_service = None
+# Menu added guard to avoid duplicate menus
+_ANSWER_CHECKER_MENU_ADDED = False
+# Track last prepared card id at module level to avoid window-dependent state
+_LAST_PREPARED_CARD_ID: Optional[int] = None
 
 # Constants for difficulty levels
 DIFFICULTY_AGAIN = "Again"
@@ -125,6 +129,12 @@ def initialize_addon() -> None:
 def add_menu() -> None:
     """Add Answer Checker menu to Anki UI with fallbacks"""
     try:
+        global _ANSWER_CHECKER_MENU_ADDED
+
+        # If already added, skip
+        if _ANSWER_CHECKER_MENU_ADDED:
+            return
+
         if not hasattr(mw, "form"):
             logger.warning("mw.form not ready; deferring menu add")
             return
@@ -134,29 +144,43 @@ def add_menu() -> None:
 
         # Try top-level menubar first
         if menubar is not None:
-            # Remove existing
+            # If a previous menu with same objectName exists, skip creating
+            existing = None
             for action in menubar.actions():
-                if action.text() == "Answer Checker":
-                    menubar.removeAction(action)
+                menu = action.menu() if hasattr(action, 'menu') else None
+                if isinstance(menu, QMenu) and menu.objectName() == "myanswerchecker_menu":
+                    existing = menu
                     break
 
-            answer_checker_menu = QMenu("Answer Checker", mw)
-            menubar.addMenu(answer_checker_menu)
-            added = True
+            if existing is None:
+                answer_checker_menu = QMenu("Answer Checker", mw)
+                answer_checker_menu.setObjectName("myanswerchecker_menu")
+                menubar.addMenu(answer_checker_menu)
+                added = True
+            else:
+                answer_checker_menu = existing
 
             menu_parent = answer_checker_menu
         else:
             menu_parent = None
 
-        # Fallback: add under Tools menu
+        # Fallback: add under Tools menu ONLY if top-level could not be added
         tools_menu = getattr(mw.form, "menuTools", None)
-        if tools_menu is not None:
-            # Create a submenu under Tools as well for discoverability
-            submenu = QMenu("Answer Checker", tools_menu)
-            tools_menu.addMenu(submenu)
-            # Prefer submenu as parent if top-level failed
-            if not added:
-                menu_parent = submenu
+        if tools_menu is not None and not added:
+            # If an existing submenu with our objectName exists, reuse it
+            existing_submenu = None
+            for action in tools_menu.actions():
+                menu = action.menu() if hasattr(action, 'menu') else None
+                if isinstance(menu, QMenu) and menu.objectName() == "myanswerchecker_menu":
+                    existing_submenu = menu
+                    break
+            if existing_submenu is None:
+                submenu = QMenu("Answer Checker", tools_menu)
+                submenu.setObjectName("myanswerchecker_menu")
+                tools_menu.addMenu(submenu)
+            else:
+                submenu = existing_submenu
+            menu_parent = submenu
 
         if menu_parent is None:
             logger.error("No menu parent available to add Answer Checker menu")
@@ -168,13 +192,20 @@ def add_menu() -> None:
             ("Settings", openSettingsDialog),
         ]
 
+        # Clear old actions that match our labels to avoid duplicates
+        existing_labels = {action.text(): action for action in menu_parent.actions()}
         for label, callback in menu_items:
+            if label in existing_labels:
+                menu_parent.removeAction(existing_labels[label])
             action = QAction(label, menu_parent)
             action.triggered.connect(callback)
             menu_parent.addAction(action)
 
-        where = "menubar and Tools" if added and tools_menu else ("menubar" if added else "Tools submenu")
+        where = "menubar" if added else ("Tools submenu" if tools_menu else "unknown")
         logger.debug(f"Answer Checker menu added to {where}")
+
+        # Mark as added to prevent future duplicates
+        _ANSWER_CHECKER_MENU_ADDED = True
     except Exception as e:
         logger.error(f"Error adding menu items: {str(e)}")
         raise
@@ -229,17 +260,17 @@ gui_hooks.main_window_did_init.append(_on_main_window_did_init)
 
 def on_prepare_card(card: Card) -> None:
     """카드가 표시될 때 호출되는 함수입니다."""
-    global answer_checker_window
+    global answer_checker_window, _LAST_PREPARED_CARD_ID
     if not answer_checker_window or not answer_checker_window.isVisible():
         return
         
     try:
         # 이전 카드와 동일한지 확인
-        if hasattr(answer_checker_window, 'last_prepared_card_id') and answer_checker_window.last_prepared_card_id == card.id:
+        if _LAST_PREPARED_CARD_ID == card.id:
             logger.debug("Skipping duplicate card preparation in on_prepare_card")
             return
             
-        answer_checker_window.last_prepared_card_id = card.id
+        _LAST_PREPARED_CARD_ID = card.id
         
         # WebView 상태 확인
         if not answer_checker_window._check_webview_state():
@@ -276,8 +307,14 @@ def on_prepare_card(card: Card) -> None:
         if answer_checker_window:
             answer_checker_window.show_error_message(f"Error while displaying the question: {str(e)}")
 
+def _on_reviewer_did_answer_card(reviewer: Reviewer, card: Card, ease: int) -> None:
+    """Reset last prepared card id after an answer so the same card can be prepared again if shown."""
+    global _LAST_PREPARED_CARD_ID
+    _LAST_PREPARED_CARD_ID = None
+
 # Register hooks
 reviewer_did_show_question.append(on_prepare_card)
+reviewer_did_answer_card.append(_on_reviewer_did_answer_card)
 
 from aqt import mw
 from aqt.qt import QSettings

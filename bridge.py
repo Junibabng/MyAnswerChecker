@@ -240,6 +240,26 @@ class Bridge(QObject):
         self.timer.timeout.connect(self.update_timer)
         self.timer.setInterval(100)  # 100ms 간격으로 업데이트
 
+    def _notify_retry_status(self, attempt: int, max_retries: int, delay: Optional[int] = None, error: Optional[str] = None) -> None:
+        """Show a user-visible retry status message in the chat window."""
+        try:
+            window = self.get_answer_checker_window()
+            if not window or not hasattr(window, 'message_manager'):
+                return
+
+            parts = []
+            if error:
+                parts.append(f"LLM request failed: {error}")
+            parts.append(f"Retry attempt {attempt}/{max_retries}")
+            if delay is not None and attempt <= max_retries:
+                parts.append(f"Retrying in {delay} seconds…")
+
+            text = " • ".join(parts)
+            info_msg = window.message_manager.create_info_message(text)
+            window.append_to_chat(info_msg)
+        except Exception as e:
+            logger.debug(f"Failed to notify retry status: {e}")
+
     def _handle_response_timeout(self, request_id: str, data_type: str = "response") -> None:
         """응답 시간 초과 처리"""
         error_msg = "Response timed out."
@@ -345,18 +365,35 @@ class Bridge(QObject):
             self._show_error_message(f"Failed to change model: {str(e)}")
 
     def call_llm_api(self, system_message, user_message_content, max_retries=3):
-        """Calls the selected LLM API to get a response."""
+        """Calls the selected LLM API to get a response with visible retry feedback."""
         if not self.llm_provider:
             self.update_llm_provider()
 
-        for attempt in range(max_retries):
+        # Exponential backoff: 1s, 2s, 4s (capped at 8s)
+        for attempt_idx in range(max_retries):
+            attempt_num = attempt_idx + 1
             try:
                 return self.llm_provider.call_api(system_message, user_message_content)
             except requests.exceptions.RequestException as e:
-                logger.error(f"Error calling LLM API (Attempt {attempt + 1}/{max_retries}): {e}")
-                if attempt == max_retries - 1:
+                logger.error(f"Error calling LLM API (Attempt {attempt_num}/{max_retries}): {e}")
+                if attempt_num >= max_retries:
+                    # Final failure: show an error in chat for visibility
+                    try:
+                        window = self.get_answer_checker_window()
+                        if window and hasattr(window, 'message_manager'):
+                            err_msg = window.message_manager.create_error_message(
+                                error_content="LLM request failed after retries.",
+                                help_text=str(e)
+                            )
+                            window.append_to_chat(err_msg)
+                    except Exception:
+                        pass
                     return f"Error occurred while calling LLM API. ({e})"
-                time.sleep(1)
+
+                # Calculate delay and notify UI
+                delay = min(2 ** attempt_idx, 8)
+                self._notify_retry_status(attempt=attempt_num + 1, max_retries=max_retries, delay=delay, error=str(e))
+                time.sleep(delay)
             except Exception as e:
                 logger.exception("Unexpected error calling LLM API: %s", e)
                 return "An unexpected error occurred while calling LLM API."
