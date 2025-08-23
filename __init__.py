@@ -1,20 +1,36 @@
 import logging
+import os
+import sys
 from aqt import mw, gui_hooks
 from aqt.qt import QAction, QMenu
 from aqt.gui_hooks import reviewer_did_show_question, reviewer_did_show_answer
-from aqt.utils import showWarning
+from aqt.utils import showWarning, showInfo
+from anki.cards import Card
+from typing import Optional, Any
+
+# Ensure vendored dependencies in libs/ are importable
+try:
+    _libs_path = os.path.join(__path__[0], "libs")  # type: ignore[name-defined]
+    if os.path.isdir(_libs_path) and _libs_path not in sys.path:
+        sys.path.insert(0, _libs_path)
+except Exception:
+    # Best-effort; avoid breaking addon load on failure
+    pass
+
 from .bridge import Bridge
 from .answer_checker_window import AnswerCheckerWindow
-from .main import openSettingsDialog, load_global_settings
+from .main import add_menu, openSettingsDialog, initialize_addon, load_global_settings
+from .settings_manager import settings_manager
+from .auto_difficulty import extract_difficulty
 
 # Global instances
-bridge = None
-answer_checker_window = None
+bridge: Optional[Bridge] = None
+answer_checker_window: Optional[AnswerCheckerWindow] = None
 
 # Setup logging
 logger = logging.getLogger(__name__)
 
-def initialize_addon():
+def initialize_addon() -> None:
     """Initialize the addon when profile is loaded"""
     global bridge
     try:
@@ -28,62 +44,54 @@ def initialize_addon():
         logger.error(f"Error initializing addon: {str(e)}")
         showWarning(f"Error initializing addon: {str(e)}")
 
-def register_hooks():
+def register_hooks() -> None:
     """Register all necessary hooks"""
     for hook, callback in [
-        (reviewer_did_show_question, on_show_question),
-        (reviewer_did_show_answer, on_show_answer)
+        (reviewer_did_show_question, show_question_),
+        (reviewer_did_show_answer, show_answer_)
     ]:
         hook.append(callback)
         logger.debug("Registered hook")
 
-def on_show_question(card):
-    """Hook for when a question is shown"""
+def show_question_(card: Card) -> None:
+    """카드 질문이 표시될 때 호출되는 핸들러"""
     if bridge:
         bridge.start_timer()
 
-def on_show_answer(card):
-    """Hook for when an answer is shown"""
+def show_answer_(card: Card) -> None:
+    """카드 답변이 표시될 때 호출되는 핸들러"""
     if bridge:
         bridge.stop_timer()
 
-def open_answer_checker_window():
-    """Opens the answer checker window"""
-    global answer_checker_window, bridge
+def show_answer_checker() -> None:
+    """답변 체크 창을 표시합니다."""
+    global bridge, answer_checker_window
+    
+    if answer_checker_window is None:
+        if bridge is None:
+            bridge = Bridge()
+        answer_checker_window = AnswerCheckerWindow(bridge)
+        bridge.set_answer_checker_window(answer_checker_window)
+    
+    answer_checker_window.show()
+    answer_checker_window.activateWindow()
+
+def on_profile_loaded() -> None:
+    """Function to be executed when the profile is loaded"""
+    global bridge
     try:
-        if not bridge:
+        if bridge is None:
             initialize_addon()
-        answer_checker_window = AnswerCheckerWindow(bridge, mw)
-        answer_checker_window.show()
+            logger.info("Addon initialization complete")
+        else:
+            logger.info("Addon already initialized.")
     except Exception as e:
-        logger.error(f"Error opening Answer Checker: {str(e)}")
-        showWarning(f"Error opening Answer Checker: {str(e)}")
+        logger.exception("Error initializing addon: %s", e)
+        showInfo(f"Error initializing addon: {str(e)}")
 
-def add_menu():
-    """Add menu items to Anki"""
-    try:
-        tools_menu = next((action.menu() for action in mw.form.menubar.actions() 
-                          if action.text() == "&Tools"), None)
-        if not tools_menu:
-            logger.error("Tools menu not found")
-            return
+# Register the profile loaded hook
+gui_hooks.profile_did_open.append(on_profile_loaded)
 
-        answer_checker_menu = QMenu("Answer Checker", tools_menu)
-        tools_menu.addMenu(answer_checker_menu)
-
-        menu_items = [
-            ("Open Answer Checker", open_answer_checker_window),
-            ("Settings", openSettingsDialog)
-        ]
-
-        for label, callback in menu_items:
-            action = QAction(label, answer_checker_menu)
-            action.triggered.connect(callback)
-            answer_checker_menu.addAction(action)
-            
-        logger.debug("Menu items added successfully")
-    except Exception as e:
-        logger.error(f"Error adding menu items: {str(e)}")
-
-# Initialize addon when profile is loaded
-gui_hooks.profile_did_open.append(initialize_addon)
+# Register reviewer hooks
+gui_hooks.reviewer_did_show_question.append(show_question_)
+gui_hooks.reviewer_did_show_answer.append(show_answer_)

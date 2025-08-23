@@ -2,20 +2,17 @@ import re
 import json
 import os
 import sys
-import threading
 import logging
-from aqt import mw, gui_hooks, QAction, QInputDialog, QMenu, QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox
-from aqt.utils import showInfo
-from bs4 import BeautifulSoup
-from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QTimer, QMetaObject, Q_ARG, Qt
-from PyQt6.QtWebChannel import QWebChannel
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QScrollArea, QHBoxLayout, QWidget
-import requests
+import concurrent.futures
 from datetime import datetime
 import time
-from aqt.qt import *
+import random
 from abc import ABC, abstractmethod
+from typing import Optional, Any, Dict, List, Generator, Callable, TypeVar, Union, cast
+
+from aqt import mw, gui_hooks
+from aqt.utils import showInfo, tooltip
+from aqt.qt import *
 from aqt.gui_hooks import (
     reviewer_will_end,
     reviewer_did_show_question,
@@ -24,13 +21,30 @@ from aqt.gui_hooks import (
     reviewer_will_show_context_menu,
 )
 
-# Logging setup (Corrected)
-import logging
-import os
-from aqt import mw
-from aqt.qt import QSettings
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox, QComboBox, QGroupBox
-from .providers import OpenAIProvider, GeminiProvider
+from anki.cards import Card
+from aqt.reviewer import Reviewer
+
+from bs4 import BeautifulSoup
+from aqt.qt import (
+    pyqtSlot,
+    pyqtSignal,
+    QObject,
+    QTimer,
+    QMetaObject,
+    Q_ARG,
+    Qt,
+    QWebChannel,
+    QWebEngineView,
+    QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton,
+    QSpinBox, QDoubleSpinBox, QComboBox, QGroupBox,
+    QScrollArea, QHBoxLayout, QWidget, QCheckBox,
+)
+
+from .message import MessageManager, show_info
+from .providers import OpenAIProvider, GeminiProvider, provider_factory
+from .settings_manager import settings_manager
+from .bridge import Bridge
+from .answer_checker_window import AnswerCheckerWindow
 
 # Setup logging
 addon_dir = os.path.dirname(os.path.abspath(__file__))
@@ -49,9 +63,11 @@ if not logger.handlers:
 
 logger.info("Addon load start")
 
-# Global bridge object
+# Global objects
 bridge = None
 answer_checker_window = None
+message_manager = MessageManager()
+chat_service = None
 
 # Constants for difficulty levels
 DIFFICULTY_AGAIN = "Again"
@@ -61,16 +77,13 @@ DIFFICULTY_EASY = "Easy"
 
 class LLMProvider(ABC):
     @abstractmethod
-    def call_api(self, system_message, user_message, temperature=0.2):
+    def call_api(self, system_message: str, user_message: str, temperature: float = 0.2) -> str:
+        """LLM API를 호출하여 응답을 받아옵니다."""
         pass
 
-from .bridge import Bridge
-from .answer_checker_window import AnswerCheckerWindow
+T = TypeVar('T')
 
-# Initialize Bridge and AnswerCheckerWindow
-bridge = Bridge()
-
-def setup_webchannel(bridge, web):
+def setup_webchannel(bridge: Bridge, web: QWebEngineView) -> None:
     """Sets up QWebChannel to enable communication between JavaScript and Python."""
     try:
         channel = QWebChannel()
@@ -82,71 +95,192 @@ def setup_webchannel(bridge, web):
             logger.error("Could not find webview object or it does not support setWebChannel method.")
     except Exception as e:
         logger.exception("Error setting up QWebChannel: %s", e)
-        showInfo(f"Error setting up QWebChannel: ")
+        message_manager.handle_response_error("Error setting up QWebChannel", str(e))
 
-def add_menu():
-    # "Tools" menu
-    tools_menu = None
-    for action in mw.form.menubar.actions():
-        if action.text() == "&Tools":
-            tools_menu = action.menu()
-            break
-
-    # Exit if "Tools" menu is not found
-    if tools_menu is None:
-        print("Error: Tools menu not found.")
-        return
-
-    # Create "Answer Checker" menu
-    answer_checker_menu = QMenu("Answer Checker", tools_menu)
-    tools_menu.addMenu(answer_checker_menu)
-
-    # Create "Open" action
-    open_action = QAction("Open Answer Checker", answer_checker_menu)
-    open_action.triggered.connect(lambda: open_answer_checker_window(bridge))
-    answer_checker_menu.addAction(open_action)
-
-    # Create "Settings" action
-    settings_action = QAction("Settings", answer_checker_menu)
-    settings_action.triggered.connect(openSettingsDialog)
-    answer_checker_menu.addAction(settings_action)
-
-def open_answer_checker_window():
-    """Opens the answer checker window"""
-    global bridge
-    window = AnswerCheckerWindow(bridge, mw)
-    window.show()
-
-def on_profile_loaded():
-    """Function to be executed when the profile is loaded"""
-    global bridge
+def initialize_addon() -> None:
+    """Initialize the addon"""
+    global bridge, chat_service, answer_checker_window
     try:
-        load_global_settings()
+        # 설정 로드
+        settings: Dict[str, Any] = settings_manager.load_settings()
+        mw.llm_addon_settings = settings
+        
+        # Instantiate chat_service using provider factory
+        from services.chat_service import ChatService
+        chat_service = ChatService(settings)
+        
+        # 브릿지 초기화
         if bridge is None:
             bridge = Bridge()
-            add_menu()
-            logger.info("Addon initialization complete")
-        else:
-            logger.info("Addon already initialized.")
+            
+        # Answer Checker Window 초기화
+        if answer_checker_window is None:
+            answer_checker_window = AnswerCheckerWindow(bridge, mw)
+            
+        logger.info("Addon initialized successfully")
     except Exception as e:
         logger.exception("Error initializing addon: %s", e)
-        showInfo(f"Error initializing addon: ")
+        raise
 
-# Register hooks
+def add_menu() -> None:
+    """Add Answer Checker menu to Anki UI with fallbacks"""
+    try:
+        if not hasattr(mw, "form"):
+            logger.warning("mw.form not ready; deferring menu add")
+            return
+
+        menubar = getattr(mw.form, "menubar", None)
+        added = False
+
+        # Try top-level menubar first
+        if menubar is not None:
+            # Remove existing
+            for action in menubar.actions():
+                if action.text() == "Answer Checker":
+                    menubar.removeAction(action)
+                    break
+
+            answer_checker_menu = QMenu("Answer Checker", mw)
+            menubar.addMenu(answer_checker_menu)
+            added = True
+
+            menu_parent = answer_checker_menu
+        else:
+            menu_parent = None
+
+        # Fallback: add under Tools menu
+        tools_menu = getattr(mw.form, "menuTools", None)
+        if tools_menu is not None:
+            # Create a submenu under Tools as well for discoverability
+            submenu = QMenu("Answer Checker", tools_menu)
+            tools_menu.addMenu(submenu)
+            # Prefer submenu as parent if top-level failed
+            if not added:
+                menu_parent = submenu
+
+        if menu_parent is None:
+            logger.error("No menu parent available to add Answer Checker menu")
+            return
+
+        # 메뉴 항목 추가
+        menu_items: List[Tuple[str, Callable[[], None]]] = [
+            ("Open Answer Checker", open_answer_checker_window),
+            ("Settings", openSettingsDialog),
+        ]
+
+        for label, callback in menu_items:
+            action = QAction(label, menu_parent)
+            action.triggered.connect(callback)
+            menu_parent.addAction(action)
+
+        where = "menubar and Tools" if added and tools_menu else ("menubar" if added else "Tools submenu")
+        logger.debug(f"Answer Checker menu added to {where}")
+    except Exception as e:
+        logger.error(f"Error adding menu items: {str(e)}")
+        raise
+
+def open_answer_checker_window() -> None:
+    """Opens the answer checker window"""
+    global answer_checker_window, bridge
+    try:
+        if not bridge:
+            initialize_addon()
+        if answer_checker_window is None:
+            answer_checker_window = AnswerCheckerWindow(bridge, mw)
+            bridge.set_answer_checker_window(answer_checker_window)  # Bridge에 window 참조 설정
+        answer_checker_window.show()
+    except Exception as e:
+        logger.error(f"Error opening Answer Checker: {str(e)}")
+        showInfo(f"Error opening Answer Checker: {str(e)}")
+
+def on_profile_loaded() -> None:
+    """프로필이 로드될 때 호출되는 함수입니다."""
+    global bridge, answer_checker_window, message_manager
+    
+    try:
+        # Bridge 초기화
+        if bridge is None:
+            bridge = Bridge()
+            logger.debug("Bridge initialized")
+
+        # Answer Checker Window 초기화
+        if answer_checker_window is None:
+            answer_checker_window = AnswerCheckerWindow(bridge)
+            logger.debug("Answer Checker Window initialized")
+
+        # 메뉴 추가
+        add_menu()
+        logger.debug("Menu initialization completed")
+
+    except Exception as e:
+        logger.error(f"Error in on_profile_loaded: {str(e)}")
+        show_info(f"An error occurred during initialization: {str(e)}")
+
+# Register hooks (ensure menu after main window init)
 gui_hooks.profile_did_open.append(on_profile_loaded)
 
-def on_prepare_card(card):
-    """Focus on the text input field when a new card is displayed"""
+def _on_main_window_did_init():
+    try:
+        add_menu()
+    except Exception as e:
+        logger.error(f"Failed to add menu on main_window_did_init: {e}")
+
+gui_hooks.main_window_did_init.append(_on_main_window_did_init)
+
+def on_prepare_card(card: Card) -> None:
+    """카드가 표시될 때 호출되는 함수입니다."""
     global answer_checker_window
-    if answer_checker_window and answer_checker_window.isVisible():
-        answer_checker_window.web_view.setHtml(answer_checker_window.default_html)
-        answer_checker_window.input_field.setFocus()
+    if not answer_checker_window or not answer_checker_window.isVisible():
+        return
+        
+    try:
+        # 이전 카드와 동일한지 확인
+        if hasattr(answer_checker_window, 'last_prepared_card_id') and answer_checker_window.last_prepared_card_id == card.id:
+            logger.debug("Skipping duplicate card preparation in on_prepare_card")
+            return
+            
+        answer_checker_window.last_prepared_card_id = card.id
+        
+        # WebView 상태 확인
+        if not answer_checker_window._check_webview_state():
+            logger.debug("WebView not ready in on_prepare_card, scheduling delayed preparation")
+            QTimer.singleShot(500, lambda: on_prepare_card(card))
+            return
+            
+        card_content, _, _ = answer_checker_window.bridge.get_card_content()
+        if not card_content:
+            logger.error("Failed to get card content in on_prepare_card")
+            return
+            
+        # MessageManager를 통한 메시지 생성
+        question_message = answer_checker_window.message_manager.create_question_message(
+            content=answer_checker_window.markdown_to_html(card_content)
+        )
+        
+        def show_messages() -> None:
+            if not answer_checker_window:
+                return
+            answer_checker_window.clear_chat()
+            answer_checker_window.append_to_chat(question_message)
+            
+            if not answer_checker_window.last_difficulty_message:
+                QTimer.singleShot(100, answer_checker_window.show_review_message)
+            
+            answer_checker_window.input_field.setFocus()
+        
+        # 적절한 딜레이 후 메시지 표시
+        QTimer.singleShot(300, show_messages)
+        
+    except Exception as e:
+        logger.exception("Error in on_prepare_card: %s", str(e))
+        if answer_checker_window:
+            answer_checker_window.show_error_message(f"Error while displaying the question: {str(e)}")
 
 # Register hooks
 reviewer_did_show_question.append(on_prepare_card)
 
 from aqt import mw
-from PyQt6.QtCore import QSettings
+from aqt.qt import QSettings
 from aqt.utils import showInfo
 from aqt.qt import *
 
@@ -185,8 +319,6 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(400)
 
         self.layout = QVBoxLayout(self)
-
-        # Create tab widget
         self.tabWidget = QTabWidget()
         
         # API Settings Tab
@@ -289,9 +421,8 @@ class SettingsDialog(QDialog):
         
         self.debugGroup.setLayout(debugLayout)
         generalLayout.addWidget(self.debugGroup)
-        self.generalTab.setLayout(generalLayout)
 
-        # 시스템 프롬프트 설정 그룹
+        # System Prompt Settings
         systemPromptGroup = QGroupBox("System Prompt Settings")
         systemPromptLayout = QVBoxLayout()
         
@@ -302,8 +433,9 @@ class SettingsDialog(QDialog):
         
         systemPromptGroup.setLayout(systemPromptLayout)
         generalLayout.addWidget(systemPromptGroup)
+        self.generalTab.setLayout(generalLayout)
 
-        # Add tabs to tab widget
+        # Add tabs
         self.tabWidget.addTab(self.apiTab, "API Settings")
         self.tabWidget.addTab(self.difficultyTab, "Difficulty")
         self.tabWidget.addTab(self.generalTab, "General")
@@ -332,89 +464,75 @@ class SettingsDialog(QDialog):
 
     def loadSettings(self):
         """Loads settings into UI"""
-        settings = QSettings("LLM_response_evaluator", "Settings")
+        settings = settings_manager.load_settings()
         
         # API provider settings
-        provider = settings.value("providerType", "openai")
+        provider = settings.get("providerType", "openai")
         self.providerCombo.setCurrentText(provider.capitalize())
         
         # OpenAI settings
-        self.openaiKeyEdit.setText(settings.value("openaiApiKey", ""))
-        self.baseUrlEdit.setText(settings.value("baseUrl", "https://api.openai.com"))
-        self.modelEdit.setText(settings.value("modelName", "gpt-4o-mini"))
+        self.openaiKeyEdit.setText(settings.get("openaiApiKey", ""))
+        self.baseUrlEdit.setText(settings.get("baseUrl", "https://api.openai.com"))
+        self.modelEdit.setText(settings.get("modelName", "gpt-5-nano"))
         
         # Gemini settings
-        self.geminiKeyEdit.setText(settings.value("geminiApiKey", ""))
-        self.geminiModelEdit.setText(settings.value("geminiModel", "gemini-2.0-flash-exp"))
+        self.geminiKeyEdit.setText(settings.get("geminiApiKey", ""))
+        self.geminiModelEdit.setText(settings.get("geminiModel", "gemini-2.5-flash-lite"))
         
         # Other settings
-        self.easyThresholdEdit.setValue(int(settings.value("easyThreshold", "5")))
-        self.goodThresholdEdit.setValue(int(settings.value("goodThreshold", "40")))
-        self.hardThresholdEdit.setValue(int(settings.value("hardThreshold", "60")))
-        self.temperatureEdit.setValue(float(settings.value("temperature", "0.7")))
+        self.easyThresholdEdit.setValue(int(settings.get("easyThreshold", 5)))
+        self.goodThresholdEdit.setValue(int(settings.get("goodThreshold", 40)))
+        self.hardThresholdEdit.setValue(int(settings.get("hardThreshold", 60)))
+        self.temperatureEdit.setValue(float(settings.get("temperature", 0.7)))
         
-        # Load debug settings
-        self.debugLoggingCheckbox.setChecked(settings.value("debug_logging", False, type=bool))
-
-        # Load system prompt (remove language setting)
-        self.systemPromptEdit.setText(settings.value("systemPrompt", "You are a helpful assistant."))
+        # Debug settings
+        self.debugLoggingCheckbox.setChecked(settings.get("debug_logging", False))
+        
+        # System prompt
+        self.systemPromptEdit.setText(settings.get("systemPrompt", "You are a helpful assistant."))
 
     def saveSettings(self):
         """Saves settings"""
-        settings = QSettings("LLM_response_evaluator", "Settings")
+        settings = {
+            "providerType": self.providerCombo.currentText().lower(),
+            "openaiApiKey": self.openaiKeyEdit.text(),
+            "baseUrl": self.baseUrlEdit.text(),
+            "modelName": self.modelEdit.text(),
+            "geminiApiKey": self.geminiKeyEdit.text(),
+            "geminiModel": self.geminiModelEdit.text(),
+            "easyThreshold": self.easyThresholdEdit.value(),
+            "goodThreshold": self.goodThresholdEdit.value(),
+            "hardThreshold": self.hardThresholdEdit.value(),
+            "temperature": self.temperatureEdit.value(),
+            "systemPrompt": self.systemPromptEdit.text(),
+            "debug_logging": self.debugLoggingCheckbox.isChecked()
+        }
         
-        # API provider settings
-        provider_type = self.providerCombo.currentText().lower()
-        settings.setValue("providerType", provider_type)
-        
-        # OpenAI settings
-        settings.setValue("openaiApiKey", self.openaiKeyEdit.text())
-        settings.setValue("baseUrl", self.baseUrlEdit.text())
-        settings.setValue("modelName", self.modelEdit.text())
-        
-        # Gemini settings
-        settings.setValue("geminiApiKey", self.geminiKeyEdit.text())
-        settings.setValue("geminiModel", self.geminiModelEdit.text())
-        
-        # Other settings
-        settings.setValue("easyThreshold", str(self.easyThresholdEdit.value()))
-        settings.setValue("goodThreshold", str(self.goodThresholdEdit.value()))
-        settings.setValue("hardThreshold", str(self.hardThresholdEdit.value()))
-        settings.setValue("temperature", str(self.temperatureEdit.value()))
-        
-        # Save system prompt instead of language
-        settings.setValue("systemPrompt", self.systemPromptEdit.text())
-        
-        # Remove language setting
-        settings.remove("language")
-        
-        # Save debug settings
-        settings.setValue("debug_logging", self.debugLoggingCheckbox.isChecked())
-        
-        # Update logging level
-        if self.debugLoggingCheckbox.isChecked():
-            logger.setLevel(logging.DEBUG)
+        if settings_manager.save_settings(settings):
+            showInfo("Settings saved successfully.")
+            self.accept()
         else:
-            logger.setLevel(logging.INFO)
-
-        # Update Bridge's LLM provider
-        if bridge:
-            bridge.update_llm_provider()
-
-        load_global_settings()
-        showInfo("Settings saved successfully.")
-        self.accept()
+            showInfo("Failed to save settings. Please try again.")
 
 # Function to open settings dialog
 def openSettingsDialog():
     dialog = SettingsDialog(mw)
     dialog.exec()
 
-# Function to handle JavaScript message from pycmd
 def on_js_message(handled, msg, context):
-    if msg == "open_settings":
-        openSettingsDialog()
-        return (True, None)
+    """JavaScript 메시지 처리"""
+    if not isinstance(msg, str):
+        return handled
+    try:
+        data = json.loads(msg)
+        if "type" in data and data["type"] == "error":
+            message_manager.handle_response_error(data.get("message", "Unknown error"))
+        elif "type" in data and data["type"] == "response":
+            message_manager.process_complete_response(data.get("text", ""), data.get("model", "Unknown Model"))
+    except json.JSONDecodeError:
+        message_manager.handle_response_error("Invalid message format")
+    except Exception as e:
+        message_manager.handle_response_error("Error processing message", str(e))
     return handled
 
 gui_hooks.webview_did_receive_js_message.append(on_js_message)
@@ -481,3 +599,52 @@ def showInfo(message):
                 self.partial_response += response_text
                 self.partial_response = ""  # Reset buffer after successful parse
                 # ...existing response 처리 로직...
+
+class MainController:
+    def __init__(self) -> None:
+        self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+        self.current_provider = None
+        self.initialize_provider()
+    
+    def initialize_provider(self) -> None:
+        try:
+            provider_name = settings_manager.get("provider", "openai")
+            self.current_provider = provider_factory.create_provider(provider_name)
+        except Exception as e:
+            logger.error(f"프로바이더 초기화 실패: {str(e)}")
+            self.current_provider = None
+
+    def show_question_(self, card: Card) -> None:
+        """카드 질문이 표시될 때 호출되는 핸들러"""
+        if not self.current_provider:
+            return
+        try:
+            logger.debug(f"Question shown for card: {card.id}")
+            # 여기에 질문 표시 로직 구현
+        except Exception as e:
+            logger.error(f"Error in show_question_: {str(e)}")
+
+    def show_answer_(self, card: Card) -> None:
+        """카드 답변이 표시될 때 호출되는 핸들러"""
+        if not self.current_provider:
+            return
+        try:
+            logger.debug(f"Answer shown for card: {card.id}")
+            # 여기에 답변 표시 로직 구현
+        except Exception as e:
+            logger.error(f"Error in show_answer_: {str(e)}")
+
+    def prepare_card_(self, card: Card) -> None:
+        """카드 준비 시 호출되는 핸들러"""
+        if not self.current_provider:
+            return
+        try:
+            logger.debug(f"Preparing card: {card.id}")
+            # 여기에 카드 준비 로직 구현
+        except Exception as e:
+            logger.error(f"Error in prepare_card_: {str(e)}")
+
+    def cleanup(self) -> None:
+        """리소스 정리"""
+        if self.thread_pool:
+            self.thread_pool.shutdown(wait=False)

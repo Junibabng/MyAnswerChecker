@@ -1,61 +1,164 @@
-# AI Answer Checker for Anki
+# MyAnswerChecker - Anki Answer Evaluation Add-on
 
-An advanced Anki plugin that leverages AI to provide intelligent feedback on your answers, creating a more interactive and effective learning experience. Simply provide your AI API key, and the plugin will handle the rest.
-
-## Demonstration
-
-https://github.com/user-attachments/assets/fb3d238e-e200-42de-9a8d-2a03032c2646
+An intelligent Anki add-on that evaluates your answers using LLM (Large Language Model) technology, providing semantic understanding and personalized feedback.
 
 ## Features
 
-- **Interactive Answer Evaluation:** Your card's front appears in a chat bubble, and you can submit your answer for an AI-powered assessment.
-- **Comprehensive Feedback:** The AI provides the correct answer, evaluates your response, assesses your answering speed, and suggests a difficulty rating (`Again`, `Hard`, `Good`, `Easy`).
-- **AI-Powered Conversations:** Engage in a follow-up conversation with the AI about the card's content to deepen your understanding.
-- **Streamlined Review Process:** Simply press `Enter` to accept the AI's recommended rating and seamlessly move to the next card.
-- **Flexible AI Provider Support:** Choose between OpenAI-compatible providers (with the ability to set a custom Base URL) and Google's Gemini.
-- **Customizable Settings:** Fine-tune the AI's behavior by adjusting the temperature, editing the system prompt, and setting your own time-based difficulty thresholds.
+### Core Functionality
+- **Semantic Answer Evaluation**: Evaluates answers based on meaning rather than exact matches
+- **Multiple LLM Support**: 
+  - OpenAI (GPT models)
+  - Google Gemini
+- **Intelligent Difficulty Rating**: Automatically suggests difficulty ratings (Again, Hard, Good, Easy) based on:
+  - Answer accuracy
+  - Response time
+  - Understanding level
+- **Real-time Feedback**: Provides immediate feedback on your answers with explanations
 
-## How to Use
+### Advanced Features
+- **Conversation Context**: Maintains context of your study session for more relevant feedback
+- **Multiple Card Type Support**:
+  - Basic cards
+  - Cloze deletion cards
+  - Support for HTML content
+- **Customizable Settings**:
+  - LLM provider selection
+  - API configuration
+  - Response time thresholds
+  - System prompts
+  - Language preferences
 
-1.  The front of the card is displayed in a message bubble within the "My Answer Checker" interface.
-2.  Type your answer for the back of the card and press `Enter` or click the **Send** button.
-3.  The AI will automatically provide a detailed evaluation, including:
-    - The correct answer.
-    - An assessment of your answer's accuracy.
-    - Feedback on your response time.
-    - A recommended review difficulty rating (`Again` / `Hard` / `Good` / `Easy`).
-4.  From here, you have two options:
-    - **3-1. Start a Conversation:** Type anything into the chat box to ask the AI follow-up questions about the card's topic.
-    - **3-2. Proceed to Next Card:** With the chat box empty, simply press `Enter` again. This will accept the AI's recommended difficulty rating and automatically move to the next card.
+### Technical Improvements
+- Complete type hint coverage for better code reliability
+- Robust error handling with detailed logging
+- ThreadPoolExecutor for improved performance
+- Comprehensive API response validation
+- Automatic retries with exponential backoff
 
-## Plugin Settings
+## Installation
 
-You can customize the plugin's behavior through the settings menu to better suit your study style and preferences.
+1. Download the add-on from AnkiWeb (Add-on code: XXXXX)
+2. In Anki, go to Tools → Add-ons → Install from file
+3. Select the downloaded file
+4. Restart Anki
 
-### API Settings
+## Configuration
 
-Here, you can configure the AI provider you wish to use. You must obtain your own API key from your chosen provider.
+### Initial Setup
+1. Open Anki
+2. Go to Tools → Answer Checker → Settings
+3. Configure your preferred LLM provider:
+   - For OpenAI: Enter your API key and select model
+   - For Gemini: Enter your API key and select model
+4. Adjust other settings as needed:
+   - Response time thresholds
+   - System prompt
+   - Debug logging options
 
--   **Provider Choice:** Select either an OpenAI-compatible provider or the Gemini provider.
--   **Custom Base URL:** For OpenAI-compatible options, you can modify the Base URL to use other compatible services.
--   **API Key:** Securely enter your personal API key.
+### Time Thresholds
+Default thresholds for difficulty ratings:
+- Easy: < 5 seconds
+- Good: 5-30 seconds
+- Hard: ≥ 30 seconds
+- Auto-Again: > 60 seconds
 
+## Usage
 
-![bandicam 2025-08-19 14-38-21-125](https://github.com/user-attachments/assets/ad17e9eb-3483-492b-a135-b52ffddf9cb9)
+1. Start reviewing cards as normal
+2. Your answer will be automatically evaluated when you type it
+3. The add-on will:
+   - Analyze your answer semantically
+   - Consider your response time
+   - Provide detailed feedback
+   - Suggest a difficulty rating
+4. You can:
+   - Follow the suggested rating
+   - Choose your own rating
+   - Ask follow-up questions
+   - View detailed explanations
 
-![bandicam 2025-08-19 14-38-11-031](https://github.com/user-attachments/assets/ce31cd1f-62e8-48ab-996e-4e5fcb3f59cc)
+## Features in Detail
 
-### Difficulty Settings
+### Semantic Evaluation
+- Understands meaning beyond exact matches
+- Accepts valid synonyms and alternative expressions
+- Considers context and language variations
+- Handles informal and regional language differences
 
-This tab allows you to define the response time thresholds (in seconds) for the `Easy`, `Good`, and `Hard` ratings. Since typing speed and card complexity vary from person to person, you are encouraged to adjust these settings to find what works best for you.
+### Answer Processing
+- Removes HTML formatting for clean text comparison
+- Handles special card formats (e.g., cloze deletions)
+- Maintains conversation history for context
+- Provides constructive feedback
 
-![bandicam 2025-08-19 14-38-25-091](https://github.com/user-attachments/assets/ab343d80-2905-4ddf-9a29-b6500c7242d7)
+### Error Handling
+- Graceful handling of API issues
+- Clear error messages with helpful suggestions
+- Automatic retry mechanism for transient errors
+- Detailed logging for troubleshooting
 
-### General Settings
+## Requirements
 
-This menu provides options to control the AI's personality and response generation.
+- Anki 2.1.55 or later
+- Python 3.9 or later
+- Internet connection for LLM API access
+- Valid API key for chosen provider
 
--   **Temperature:** Adjust the AI's creativity by setting a value between `0.0` and `1.0`. Lower values result in more deterministic responses, while higher values lead to more varied and creative outputs.
--   **System Prompt:** Modify the system prompt to guide the AI's behavior, tone, and the framework it uses for evaluating your answers.
+## Privacy & Security
+
+- No answer data is stored permanently
+- API keys are stored securely in Anki's configuration
+- All communication is encrypted (HTTPS)
+- Local processing where possible
+
+## Troubleshooting
+
+Common issues and solutions:
+1. **API Connection Issues**
+   - Check internet connection
+   - Verify API key
+   - Ensure correct base URL
    
-![bandicam 2025-08-19 14-38-29-305](https://github.com/user-attachments/assets/b9d59ea0-96b8-41ac-ab5e-e699fa956969)
+2. **Answer Evaluation Issues**
+   - Check card formatting
+   - Verify answer field content
+   - Review system prompt settings
+
+3. **Performance Issues**
+   - Check debug logs
+   - Adjust time thresholds
+   - Verify system resources
+
+## Support
+
+- GitHub Issues: [Link to repository]
+- AnkiWeb: [Link to addon page]
+- Documentation: [Link to detailed docs]
+
+## Contributing
+
+Contributions are welcome! Please see our contributing guidelines for more information.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Third-Party Licenses
+This add-on vendors minimal dependencies under `libs/` and redistributes them under their original licenses:
+- bs4 (BeautifulSoup4) — MIT
+- soupsieve — MIT
+- requests — Apache-2.0
+- urllib3 — MIT
+- certifi — MPL-2.0
+- charset_normalizer — MIT
+- idna — BSD-3-Clause
+
+Notes:
+- We do not modify these packages; licenses and notices are preserved.
+- For MPL-2.0 (certifi), if modified, the modified files would be provided under MPL-2.0.
+
+## Acknowledgments
+
+- Anki for the amazing flashcard platform
+- OpenAI and Google for their LLM APIs
+- The Anki add-on community for inspiration and support

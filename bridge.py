@@ -7,10 +7,20 @@ import logging
 from aqt import mw, gui_hooks, QAction, QInputDialog, QMenu, QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox, QDoubleSpinBox
 from aqt.utils import showInfo
 from bs4 import BeautifulSoup
-from PyQt6.QtCore import pyqtSlot, pyqtSignal, QObject, QTimer, QMetaObject, Q_ARG, Qt
-from PyQt6.QtWebChannel import QWebChannel
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QScrollArea, QHBoxLayout, QWidget
+from aqt.qt import (
+    pyqtSlot,
+    pyqtSignal,
+    QObject,
+    QTimer,
+    QMetaObject,
+    Q_ARG,
+    Qt,
+    QWebChannel,
+    QWebEngineView,
+    QScrollArea,
+    QHBoxLayout,
+    QWidget,
+)
 import requests
 from datetime import datetime
 import time
@@ -25,11 +35,16 @@ from aqt.gui_hooks import (
 )
 from .providers import LLMProvider, OpenAIProvider, GeminiProvider
 import traceback
+from .message import MessageType, Message
+from .settings_manager import settings_manager
+from .providers.provider_factory import get_provider
+from aqt.qt import QSettings
+from .auto_difficulty import extract_difficulty  # 재정의
+from typing import Optional, Dict, Any, List, Tuple, Union, cast
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 
 # Logging setup
-import logging
-import os
-
 addon_dir = os.path.dirname(os.path.abspath(__file__))
 log_file_path = os.path.join(addon_dir, 'MyAnswerChecker_debug.log')
 os.makedirs(addon_dir, exist_ok=True)
@@ -111,25 +126,25 @@ class BridgeError(Exception):
     """Bridge 관련 기본 예외 클래스"""
     def __init__(self, message, help_text=None):
         super().__init__(message)
-        self.help_text = help_text or "나중에 다시 시도해 주세요."
+        self.help_text = help_text or "Please try again later."
 
 class CardContentError(BridgeError):
     """카드 콘텐츠 처리 관련 예외"""
     def __init__(self, message):
         help_texts = {
-            "no_card": "다른 카드로 이동한 후 다시 시도해 주세요.",
-            "empty": "카드 내용을 확인하고 필요한 내용을 추가해 주세요.",
-            "no_field": "카드 템플릿을 확인하고 필요한 필드를 추가해 주세요."
+            "no_card": "Please move to another card and try again.",
+            "empty": "Please check the card content and add necessary information.",
+            "no_field": "Please check the card template and add the required fields."
         }
         
-        if "현재 리뷰 중인 카드가 없습니다" in message:
+        if "There is no card currently under review" in message:
             help_text = help_texts["no_card"]
-        elif "비어있습니다" in message:
+        elif "is empty" in message:
             help_text = help_texts["empty"]
-        elif "필드가 없습니다" in message:
+        elif ("field" in message and "missing" in message):
             help_text = help_texts["no_field"]
         else:
-            help_text = "카드 내용을 확인하고 다시 시도해 주세요."
+            help_text = "Please check the card content and try again."
             
         super().__init__(message, help_text)
 
@@ -137,8 +152,8 @@ class ResponseProcessingError(BridgeError):
     """응답 처리 관련 예외"""
     def __init__(self, message):
         help_texts = {
-            "json": "잠시 후 다시 시도해 주세요.",
-            "fields": "다시 한 번 시도해 주세요. 문제가 계속되면 설정에서 다른 AI 모델을 선택해보세요."
+            "json": "Please try again later.",
+            "fields": "Please try again. If the problem persists, try a different AI model in settings."
         }
         
         if "JSON" in message:
@@ -148,317 +163,195 @@ class ResponseProcessingError(BridgeError):
             
         super().__init__(message, help_text)
 
+class LLMProviderError(BridgeError):
+    """LLM 제공자 관련 에러"""
+    def __init__(self, message):
+        super().__init__(message, "Please check your LLM service settings.")
+
+class InvalidAPIKeyError(BridgeError):
+    """API 키 관련 에러"""
+    def __init__(self, message):
+        super().__init__(message, "API key is not configured.")
+
+@dataclass
+class CardContent:
+    """카드 내용을 담는 데이터 클래스"""
+    question: str
+    answer: str
+    note_type: str
+
 class Bridge(QObject):
+    """브릿지 클래스 - Python과 JavaScript 간의 통신을 담당"""
+    
     # Constants
-    RESPONSE_TIMEOUT = 10  # seconds
-    DEFAULT_TEMPERATURE = 0.2
+    RESPONSE_TIMEOUT: int = 10  # seconds
+    DEFAULT_TEMPERATURE: float = 0.2
+    MAX_CONTEXT_LENGTH: int = 10  # Maximum number of messages to keep in context
     
     # Signal definitions
     sendResponse = pyqtSignal(str)
     sendQuestionResponse = pyqtSignal(str)
-    sendJokeResponse = pyqtSignal(str)
-    sendEditAdviceResponse = pyqtSignal(str)
     timer_signal = pyqtSignal(str)
     stream_data_received = pyqtSignal(str, str, str)
     model_info_changed = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._initialize_attributes()
         self._setup_timer()
-        self.update_llm_provider()
+        self.thread_pool = ThreadPoolExecutor(max_workers=3)
+        
+        # 설정 매니저에 옵저버로 등록
+        settings_manager.add_observer(self)
+        
+        # 초기 설정 로드
+        settings = settings_manager.load_settings()
+        self.update_config(settings)
+        
         self.partial_response = ""
+        self._answer_checker_window = None  # 추가: AnswerCheckerWindow 참조 저장
+        self.max_context_length = self.MAX_CONTEXT_LENGTH  # Add this line
+        logger.info("Bridge initialized")
 
-    def _initialize_attributes(self):
-        """Initialize all instance attributes"""
-        self.llm_data = {}
-        self.last_response = None
-        self.last_user_answer = None
-        self.last_elapsed_time = None
-        self.timer_start_time = None
-        self.elapsed_time = None
+    def _initialize_attributes(self) -> None:
+        """속성 초기화"""
+        self.start_time: float = 0.0
+        self.elapsed_time: float = 0.0
+        self.timer: Optional[QTimer] = None
+        self._answer_checker_window = None  # Changed from answer_checker_window to _answer_checker_window
+        self.partial_response: str = ""
+        self.message_containers: Dict[str, Dict[str, Any]] = {}
         self.llm_provider = None
-        self.response_buffer = {}
-        self.response_wait_timers = {}
-        self.conversation_history = {
+        self.is_processing: bool = False
+        self.current_card_id: Optional[int] = None
+        self.conversation_history: Dict[str, Any] = {
             'messages': [],
             'card_context': None,
             'current_card_id': None
         }
-        self.max_context_length = 10  # 최대 대화 기록 수
-        self.current_card_id = None    # Add this line
-        self.is_processing = False      # Add this line
+        self.last_response: Optional[str] = None
+        self.last_user_answer: Optional[str] = None
+        self.last_elapsed_time: Optional[float] = None
+        self.update_llm_provider()
 
-    def _setup_timer(self):
-        """Setup timer with configurations"""
-        self.timer = QTimer(self)
+    def _setup_timer(self) -> None:
+        """타이머 설정"""
+        self.timer = QTimer()
         self.timer.timeout.connect(self.update_timer)
-        self.timer_interval = 500  # 0.5 seconds
-        self.timer.setInterval(self.timer_interval)
+        self.timer.setInterval(100)  # 100ms 간격으로 업데이트
 
-    def _handle_response_timeout(self, request_id, data_type="response"):
-        """Handle timeout for responses"""
-        logger.error(f"Response timeout for {data_type} request {request_id}")
-        error_message = "응답 시간이 초과되었습니다."
-        help_text = "인터넷 연결을 확인하고 다시 시도해 주세요."
-        
-        error_html = f"""
-        <div class="system-message-container error">
-            <div class="system-message">
-                <p class="error-message" style="color: #e74c3c; margin-bottom: 8px;">{error_message}</p>
-                <p class="help-text" style="color: #666; font-size: 0.9em;">{help_text}</p>
-            </div>
-            <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-        </div>
-        """
-        
-        if answer_checker_window:
-            answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
+    def _handle_response_timeout(self, request_id: str, data_type: str = "response") -> None:
+        """응답 시간 초과 처리"""
+        error_msg = "Response timed out."
+        self.handle_response_error(error_msg, f"Request {request_id} timed out")
         self._clear_request_data(request_id)
 
-    def _clear_request_data(self, request_id):
-        """Clear request related data"""
-        if request_id in self.response_buffer:
-            del self.response_buffer[request_id]
-        if request_id in self.response_wait_timers:
-            del self.response_wait_timers[request_id]
+    def _clear_request_data(self, request_id: str) -> None:
+        """요청 데이터 정리"""
+        if request_id in self.message_containers:
+            del self.message_containers[request_id]
 
-    def _process_complete_response(self, response_text):
-        """완전한 응답을 처리하고 UI를 업데이트"""
+    def _process_complete_response(self, response_text: str) -> None:
+        """완성된 응답 처리"""
         try:
-            logger.debug(f"응답 처리 시작:\n{response_text[:200]}...")
-            
-            complete_json = self.partial_response + response_text
-            response_json = json.loads(complete_json)
-            self.partial_response = ""
-            
-            logger.debug(f"파싱된 JSON: {response_json}")
-            
-            if not isinstance(response_json, dict):
-                logger.error(f"잘못된 JSON 형식: {type(response_json)}")
-                raise ResponseProcessingError("응답이 올바른 JSON 객체가 아닙니다.")
+            response_json = self.extract_json_from_text(response_text)
+            if not response_json:
+                raise ResponseProcessingError("Unable to process the response.")
                 
-            required_fields = ["evaluation", "recommendation", "answer"]
-            missing_fields = [field for field in required_fields if field not in response_json]
-            if missing_fields:
-                logger.error(f"필수 필드 누락: {missing_fields}")
-                raise ResponseProcessingError(f"응답에 필수 필드가 누락되었습니다: {', '.join(missing_fields)}")
-            
-            html_content = self._generate_response_html(response_json)
-            if answer_checker_window:
-                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + html_content)
-                logger.info("UI 업데이트 완료")
-            return True
+            html_response = self._generate_response_html(response_json)
+            self.sendResponse.emit(html_response)
             
         except json.JSONDecodeError as e:
-            logger.warning(
-                "불완전한 JSON 응답:\n"
-                f"Current Buffer: {self.partial_response[:200]}...\n"
-                f"New Text: {response_text[:200]}..."
-            )
-            self.partial_response += response_text
-            return False
-            
-        except ResponseProcessingError as e:
-            log_error(e, {
-                'response_text': response_text,
-                'partial_response': self.partial_response
-            })
-            self._show_error_message(str(e))
-            self.partial_response = ""
-            return True
-            
+            self.handle_response_error("JSON parsing error", str(e))
         except Exception as e:
-            log_error(e, {
-                'response_text': response_text,
-                'partial_response': self.partial_response,
-                'response_json': locals().get('response_json')
-            })
-            self._show_error_message(f"응답 처리 중 오류가 발생했습니다: {str(e)}")
-            self.partial_response = ""
-            return True
+            self.handle_response_error("Response processing error", str(e))
 
-    def _generate_response_html(self, response_json):
-        """Generate HTML content from response JSON"""
-        evaluation = response_json.get("evaluation", "No evaluation")
-        recommendation = response_json.get("recommendation", "No recommendation")
-        answer = response_json.get("answer", "")
-        reference = response_json.get("reference", "")
-        
-        return f"""
-        <h2>Evaluation Results</h2>
-        <p class="evaluation"><strong>Evaluation:</strong> {self.markdown_to_html(evaluation)}</p>
-        <p class="recommendation"><strong>Recommendation:</strong> {self.markdown_to_html(recommendation)}</p>
-        <div class="answer"><strong>Answer:</strong> <p>{self.markdown_to_html(answer)}</p></div>
-        <div class="reference"><strong>Reference:</strong> <p>{self.markdown_to_html(reference)}</p></div>
-        """
+    def _generate_response_html(self, response_json: Dict[str, Any]) -> str:
+        """HTML 응답 생성"""
+        try:
+            content = response_json.get("content", "")
+            return f"""
+            <div class="response-container">
+                <div class="response-content">{content}</div>
+                <div class="response-time">{datetime.now().strftime("%p %I:%M")}</div>
+            </div>
+            """
+        except Exception as e:
+            logger.error(f"HTML 생성 오류: {str(e)}")
+            raise ResponseProcessingError("An error occurred while generating HTML.")
 
     @pyqtSlot(str, str, str)
-    def update_response_chunk(self, chunk, request_id, data_type):
-        """Updates the response in the webview with a chunk of data."""
-        logger.debug(f"Received chunk for {request_id}: {chunk}")
-        
-        # Initialize buffer and timer if needed
-        if request_id not in self.response_buffer:
-            self.response_buffer[request_id] = ""
-            self.response_wait_timers[request_id] = time.time()
-            # 새로운 메시지 컨테이너 생성
-            if answer_checker_window:
-                answer_checker_window.create_message_container(request_id)
-        
-        # Update buffer
-        self.response_buffer[request_id] += chunk
-        wait_time = time.time() - self.response_wait_timers[request_id]
-        
-        # Handle timeout
-        if wait_time > self.RESPONSE_TIMEOUT:
-            self._handle_response_timeout(request_id, data_type)
-            return
-        
-        # 실시간으로 청크 업데이트
-        if answer_checker_window:
-            answer_checker_window.update_message_chunk(request_id, chunk, data_type)
-        
-        # Process complete response
-        if data_type == "response":
-            if self.is_complete_response(self.response_buffer[request_id]):
-                if self._process_complete_response(self.response_buffer[request_id]):
-                    self._clear_request_data(request_id)
-        elif data_type in ["question", "joke", "edit_advice"]:
-            try:
-                # JSON 파싱 시도
-                response_json = json.loads(self.response_buffer[request_id])
-                if answer_checker_window:
-                    answer_checker_window.finalize_message(request_id, response_json, data_type)
+    def update_response_chunk(self, chunk: str, request_id: str, data_type: str) -> None:
+        """응답 청크 업데이트"""
+        try:
+            if request_id not in self.message_containers:
+                self.message_containers[request_id] = {
+                    'content': '',
+                    'container_id': f'message-{request_id}'
+                }
+            
+            container = self.message_containers[request_id]
+            container['content'] += chunk
+            
+            if self.is_complete_response(container['content']):
+                self._process_complete_response(container['content'])
                 self._clear_request_data(request_id)
-            except json.JSONDecodeError:
-                # 아직 완성되지 않은 JSON이면 계속 누적
-                pass
+            else:
+                self.stream_data_received.emit(chunk, request_id, data_type)
+                
+        except Exception as e:
+            self.handle_response_error("Chunk processing error", str(e))
 
-    def is_complete_response(self, response_text):
-        """
-        응답이 완전한 JSON을 포함하는지 확인합니다.
-        
-            response_text (str): 확인할 텍스트
-            
-        Returns:
-            bool: 응답이 완전하면 True, 아니면 False
-        """
+    def is_complete_response(self, response_text: str) -> bool:
+        """응답이 완성되었는지 확인"""
         try:
-            # 1. 예시 JSON과 설명 텍스트 제거
-            response_text = re.sub(r'```json\s*{\s*"[^"]+"\s*:\s*"\.\.\."\s*[,}][\s\S]*?```', '', response_text)
-            response_text = re.sub(r'\*\*.*?\*\*', '', response_text)
-            response_text = re.sub(r'{{c\d+::.*?}}', '', response_text)
-            
-            # 2. JSON 찾기
-            patterns = [
-                # 완전한 코드 블록
-                r'```(?:json)?\s*({[^{]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})\s*```',
-                # 시작 코드 블록만 있는 경우
-                r'```(?:json)?\s*({[^{]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})\s*$',
-                # JSON만 있는 경우
-                r'(?:^|\s)({[^{]*?"evaluation"\s*:\s*"[^"]*?"\s*,\s*"recommendation"\s*:\s*"(?:Again|Hard|Good|Easy)"\s*,\s*"answer"\s*:\s*"[^"]*?"\s*,\s*"reference"\s*:\s*"[^"]*?"\s*})'
-            ]
-            
-            for pattern in patterns:
-                matches = list(re.finditer(pattern, response_text, re.DOTALL))
-                if matches:
-                    # 마지막 매치 사용
-                    cleaned_text = matches[-1].group(1).strip()
-                    
-                    # JSON 파싱
-                    parsed_json = json.loads(cleaned_text)
-                    
-                    # 필수 필드 확인
-                    required_fields = ["evaluation", "recommendation", "answer", "reference"]
-                    if not all(field in parsed_json for field in required_fields):
-                        logger.debug(f"Missing required fields in JSON: {parsed_json.keys()}")
-                        continue
-                    
-                    # recommendation 값 검증
-                    valid_recommendations = ["Again", "Hard", "Good", "Easy"]
-                    if parsed_json["recommendation"] not in valid_recommendations:
-                        logger.debug(f"Invalid recommendation value: {parsed_json['recommendation']}")
-                        continue
-                    
-                    return True
-            
-            logger.debug("No valid JSON pattern found in response")
-            return False
-            
-        except (json.JSONDecodeError, AttributeError, IndexError) as e:
-            logger.debug(f"Response incomplete: {str(e)}")
+            # JSON 완성 여부 확인
+            json_data = self.extract_json_from_text(response_text)
+            return bool(json_data and 'content' in json_data)
+        except:
             return False
 
-    def update_llm_provider(self):
-        """Update LLM provider with current settings"""
-        settings = QSettings("LLM_response_evaluator", "Settings")
-        provider_type = settings.value("providerType", "openai")
-        
-        # 이전 설정 저장
-        old_provider = type(self.llm_provider).__name__ if self.llm_provider else None
-        old_model = self.llm_provider.model_name if self.llm_provider else None
-        old_temperature = self.temperature if hasattr(self, 'temperature') else None
-        old_system_prompt = self.system_prompt if hasattr(self, 'system_prompt') else None
-        
-        # 새로운 설정 로드
-        self.temperature = float(settings.value("temperature", "0.2"))
-        self.system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
-        
+    def update_llm_provider(self, settings=None):
+        """Update LLM provider with the given or current settings"""
+        if settings is None:
+            settings = settings_manager.load_settings()
+        provider_type = settings.get("providerType", "openai").lower()
+
+        self.system_prompt = settings.get("systemPrompt", "You are a helpful assistant.")
+
+        def mask_key(key):
+            return f"****...{key[-4:]}" if key and len(key) > 4 else "[No key]"
+
+        openai_key = settings.get("openaiApiKey", "")
+        gemini_key = settings.get("geminiApiKey", "")
+
+        logger.debug(f"""=== LLM 프로바이더 업데이트 ===
+• 현재 제공자: {provider_type}
+• OpenAI 키: {mask_key(openai_key)}
+• Gemini 키: {mask_key(gemini_key)}
+• 시스템 프롬프트: {self.system_prompt[:50]}...
+=============================""")
+
         try:
-            if provider_type == "openai":
-                api_key = settings.value("openaiApiKey", "")
-                base_url = settings.value("baseUrl", "https://api.openai.com")
-                model_name = settings.value("modelName", "gpt-4o-mini")
-                self.llm_provider = OpenAIProvider(api_key, base_url, model_name)
-            elif provider_type == "gemini":
-                api_key = settings.value("geminiApiKey", "")
-                model_name = settings.value("geminiModel", "gemini-2.0-flash-exp")
-                self.llm_provider = GeminiProvider(api_key, model_name)
-            
-            # 프로바이더에 시스템 프롬프트 설정
+            self.llm_provider = get_provider(settings)
+
             if hasattr(self.llm_provider, 'set_system_prompt'):
                 self.llm_provider.set_system_prompt(self.system_prompt)
-            
-            # 설정이 변경되었는지 확인
-            if (old_provider != type(self.llm_provider).__name__ or
-                old_model != self.llm_provider.model_name or
-                old_temperature != self.temperature or
-                old_system_prompt != self.system_prompt):
-                logger.debug(f"""
-Model settings changed:
-- Provider: {old_provider} -> {type(self.llm_provider).__name__}
-- Model: {old_model} -> {self.llm_provider.model_name}
-- Temperature: {old_temperature} -> {self.temperature}
-- System Prompt: {old_system_prompt} -> {self.system_prompt}
-""")
-                # UI 업데이트 시그널 발생
-                self.model_info_changed.emit()
-                
-                # 대화 기록 초기화
-                self.clear_conversation_history()
-            
-        except Exception as e:
-            logger.exception("Error updating LLM provider: %s", e)
-            showInfo(f"Error updating LLM provider: {str(e)}")
 
-        return True
+            logger.info(f"LLM Provider changed to {provider_type}")
+
+        except Exception as e:
+            logger.error(f"Error updating LLM provider: {str(e)}")
+            self._show_error_message(f"Failed to change model: {str(e)}")
 
     def call_llm_api(self, system_message, user_message_content, max_retries=3):
         """Calls the selected LLM API to get a response."""
-        settings = QSettings("LLM_response_evaluator", "Settings")
-        api_key = settings.value("apiKey", "")
-        temperature = float(settings.value("temperature", "0.2"))
-
-        if not api_key:
-            return "API Key is not set."
-
         if not self.llm_provider:
             self.update_llm_provider()
 
         for attempt in range(max_retries):
             try:
-                return self.llm_provider.call_api(system_message, user_message_content, temperature=temperature)
+                return self.llm_provider.call_api(system_message, user_message_content)
             except requests.exceptions.RequestException as e:
                 logger.error(f"Error calling LLM API (Attempt {attempt + 1}/{max_retries}): {e}")
                 if attempt == max_retries - 1:
@@ -470,7 +363,7 @@ Model settings changed:
 
     def start_timer(self):
         """Starts the timer."""
-        self.timer_start_time = datetime.now()
+        self.start_time = datetime.now().timestamp()
         self.timer.start()
         logger.debug("Timer started")
 
@@ -478,16 +371,15 @@ Model settings changed:
         """Stops the timer and returns the elapsed time."""
         if self.timer.isActive():
             self.timer.stop()
-            elapsed_seconds = (datetime.now() - self.timer_start_time).total_seconds()
-            self.elapsed_time = int(elapsed_seconds)
+            self.elapsed_time = (datetime.now() - datetime.fromtimestamp(self.start_time)).total_seconds()
             logger.debug(f"Timer stopped. Elapsed time: {self.elapsed_time} seconds")
             return self.elapsed_time
         return None
 
     def update_timer(self):
         """Updates the timer based on real time."""
-        if self.timer_start_time:
-            elapsed_seconds = (datetime.now() - self.timer_start_time).total_seconds()
+        if self.start_time:
+            elapsed_seconds = (datetime.now() - datetime.fromtimestamp(self.start_time)).total_seconds()
             self.timer_signal.emit(str(int(elapsed_seconds)))
 
     @pyqtSlot(str)
@@ -503,21 +395,25 @@ Model settings changed:
                 if self.current_card_id == current_card.id:
                     # Skip evaluation if we've already evaluated this card
                     self.is_processing = False
+                    if answer_checker_window:
+                        answer_checker_window.display_loading_animation(False)
                     return
                 self.current_card_id = current_card.id
                 
             logger.debug("Received answer from JS: %s", user_answer)
             try:
                 # 설정값 로깅 추가
-                settings = QSettings("LLM_response_evaluator", "Settings")
-                easy_threshold = int(settings.value("easyThreshold", "5"))
-                good_threshold = int(settings.value("goodThreshold", "15"))
-                hard_threshold = int(settings.value("hardThreshold", "50"))
+                settings = settings_manager.load_settings()
+                easy_threshold = int(settings.get("easyThreshold", "5"))
+                good_threshold = int(settings.get("goodThreshold", "15"))
+                hard_threshold = int(settings.get("hardThreshold", "50"))
                 
                 logger.debug(f"Current threshold settings - Easy: {easy_threshold}s, Good: {good_threshold}s, Hard: {hard_threshold}s")
                 
                 card_content, card_answers, card_ord = self.get_card_content()
                 if not card_content:
+                    if answer_checker_window:
+                        answer_checker_window.display_loading_animation(False)
                     showInfo("Could not retrieve card information.")
                     response = json.dumps({"evaluation": "Card info error", "recommendation": "None", "answer": "", "reference": ""})
                     self.sendResponse.emit(response)
@@ -542,6 +438,8 @@ Model settings changed:
                 thread.start()
             except Exception as e:
                 logger.exception("Error processing receiveAnswer: %s", e)
+                if answer_checker_window:
+                    answer_checker_window.display_loading_animation(False)
                 response = json.dumps({"evaluation": "Error occurred", "recommendation": "None", "answer": "", "reference": ""})
                 self.sendResponse.emit(response)
         finally:
@@ -550,178 +448,167 @@ Model settings changed:
     def create_llm_message(self, card_content, card_answers, question, request_type):
         """Creates the message to be sent to the LLM API."""
         try:
+            # Obtain card content etc.
             card = mw.reviewer.card
             note = card.note()
             model = note.model()
             model_type = model.get('type')
-
-            settings = QSettings("LLM_response_evaluator", "Settings")
-            easy_threshold = int(settings.value("easyThreshold", "5"))
-            good_threshold = int(settings.value("goodThreshold", "15"))
-            hard_threshold = int(settings.value("hardThreshold", "50"))
-            elapsed_time = self.llm_data.get("elapsed_time")
-            language = settings.value("language", "English")
             
-            # 현재 시스템 프롬프트 확인 및 업데이트
-            current_system_prompt = settings.value("systemPrompt", "You are a helpful assistant.")
+            settings = settings_manager.load_settings()
+            easy_threshold = int(settings.get("easyThreshold", 5))
+            good_threshold = int(settings.get("goodThreshold", 15))
+            hard_threshold = int(settings.get("hardThreshold", 50))
+            elapsed_time = self.llm_data.get("elapsed_time")
+            language = settings.get("language", "English")
+            
+            # Ensure system prompt is up-to-date
+            current_system_prompt = settings.get("systemPrompt", "You are a helpful assistant.")
             if current_system_prompt != self.system_prompt:
                 self.system_prompt = current_system_prompt
                 if hasattr(self.llm_provider, 'set_system_prompt'):
                     self.llm_provider.set_system_prompt(self.system_prompt)
-
+            
             # Clean content
             soup_content = BeautifulSoup(card_content, 'html.parser')
             clean_content = soup_content.get_text()
             
-            # Format answers as a comma-separated list
             formatted_answers = ", ".join(card_answers) if isinstance(card_answers, list) else str(card_answers)
             logger.debug(f"Formatted answers for LLM: {formatted_answers}")
-
-            # 드 컨텍스트 업데이트
-            self.conversation_history['card_context'] = {
-                'content': card_content,
-                'answers': card_answers
-            }
-
+            
             # 이전 대화 내용 가져오기
             conversation_context = []
             if self.conversation_history['messages']:
                 conversation_context.append("\nPrevious conversation:")
                 for msg in self.conversation_history['messages'][-self.max_context_length:]:
                     conversation_context.append(f"{msg['role'].title()}: {msg['content']}")
-
+            
             # Create common context data
             context_data = f"""
             Context about this Anki card:
             Card Content: {clean_content}
             Correct Answer(s): {formatted_answers}
-            User's Previous Answer: {self.last_user_answer or 'Not available'}
-            Time Taken: {self.last_elapsed_time or 'Not available'} seconds
-            Previous Evaluation: {self.last_response.get('evaluation', 'Not available') if self.last_response else 'Not available'}
-            Previous Recommendation: {self.last_response.get('recommendation', 'Not available') if self.last_response else 'Not available'}
+            User's Answer: {self.llm_data.get('user_answer', 'Not available')}
+            Time Taken: {elapsed_time or 'Not available'} seconds
+            Previous Evaluation: Not available
+            Previous Recommendation: Not available
             {''.join(conversation_context)}
             """
 
-            # request_type별 특화된 프롬프트와 시스템 메시지
             type_specific_content = {
                 "answer": {
                     "system": f"You are a helpful assistant. Always answer in {language}.",
                     "content": f"""
-                    Evaluate the user's answer to an Anki card and recommend one of the following options: '{DIFFICULTY_AGAIN}', '{DIFFICULTY_HARD}', '{DIFFICULTY_GOOD}', or '{DIFFICULTY_EASY}'.
+                        Evaluate the user's answer to an Anki card and recommend one of the following options: '{DIFFICULTY_AGAIN}', '{DIFFICULTY_HARD}', '{DIFFICULTY_GOOD}', or '{DIFFICULTY_EASY}'.
 
-                    Your evaluation should include:
-                        - An assessment of the semantic accuracy of the user's answer
-                        - Consideration of the time taken to answer
-                        - The correct answer and its variations
-                        - Additional reference information to help the user understand
+                        Your evaluation should include:
+                            - An assessment of the semantic accuracy of the user's answer
+                            - Consideration of the time taken to answer
+                            - The correct answer and its variations
+                            - Additional reference information to help the user understand
 
-                    Evaluation Criteria:
-                        1. Content Accuracy:
-                            Essential Meaning Assessment:
-                                - Focus on whether the user's answer captures the core meaning
-                                - Accept synonyms and alternative expressions that convey the same idea
-                                - Allow for common variations in language use
-                                - Accept informal or colloquial forms if they clearly convey the same meaning
-                                {f"- For the {self.llm_data.get('card_ord', 0) + 1}th blank, assess meaning equivalence while being mindful of context" if model_type == 1 else ""}
+                        Evaluation Criteria:
+                            1. Content Accuracy:
+                                Essential Meaning Assessment:
+                                    - Focus on whether the user's answer captures the core meaning
+                                    - Accept synonyms and alternative expressions that convey the same idea
+                                    - Allow for common variations in language use
+                                    - Accept informal or colloquial forms if they clearly convey the same meaning
+                                    {f"- For the {self.llm_data.get('card_ord', 0) + 1}th blank, assess meaning equivalence while being mindful of context" if model_type == 1 else ""}
 
-                            Acceptable Variations:
-                                - Minor spelling or typing errors if meaning is clear
-                                - Grammatical variations that preserve the core meaning
-                                - Colloquial or informal expressions that match the meaning
-                                - Regional language variations if semantically equivalent
+                                Acceptable Variations:
+                                    - Minor spelling or typing errors if meaning is clear
+                                    - Grammatical variations that preserve the core meaning
+                                    - Colloquial or informal expressions that match the meaning
+                                    - Regional language variations if semantically equivalent
 
-                            Strictly Incorrect Cases:
-                                - Answers that change or negate the intended meaning
-                                - Completely unrelated or irrelevant responses
-                                - Overly vague answers that don't demonstrate understanding
+                                Strictly Incorrect Cases:
+                                    - Answers that change or negate the intended meaning
+                                    - Completely unrelated or irrelevant responses
+                                    - Overly vague answers that don't demonstrate understanding
 
+                            2. Response Time:
+                                - Only consider time for semantically correct answers
+                                - Time thresholds for difficulty levels:
+                                    - Easy: < {easy_threshold} seconds
+                                    - Good: {easy_threshold} - {good_threshold} seconds
+                                    - Hard: ≥ {good_threshold} seconds
+                                    - Auto-Again: > {hard_threshold} seconds
 
-                        2. Response Time:
-                            - Only consider time for semantically correct answers
-                            - Time thresholds for difficulty levels:
-                                - Easy: < {easy_threshold} seconds
-                                - Good: {easy_threshold} - {good_threshold} seconds
-                                - Hard: ≥ {good_threshold} seconds
-                                - Auto-Again: > {hard_threshold} seconds
+                        Recommendation Guidelines:
+                            {DIFFICULTY_AGAIN}:
+                                Recommend if:
+                                    - The answer fails to convey the essential meaning
+                                    - The response is unrelated or changes the core concept
+                                    - Time exceeds {hard_threshold} seconds (regardless of correctness)
+                                    - The answer is too vague to demonstrate understanding
 
-                    Recommendation Guidelines:
-                        {DIFFICULTY_AGAIN}:
-                            Recommend if:
-                                - The answer fails to convey the essential meaning
-                                - The response is unrelated or changes the core concept
-                                - Time exceeds {hard_threshold} seconds (regardless of correctness)
-                                - The answer is too vague to demonstrate understanding
+                            {DIFFICULTY_HARD}:
+                                Recommend if:
+                                    - The answer correctly conveys the meaning
+                                    - Response time ≥ {good_threshold} seconds
+                                    - Shows understanding but took significant time to recall
 
-                        {DIFFICULTY_HARD}:
-                            Recommend if:
-                                - The answer correctly conveys the meaning
-                                - Response time ≥ {good_threshold} seconds
-                                - Shows understanding but took significant time to recall
+                            {DIFFICULTY_GOOD}:
+                                Recommend if:
+                                    - The answer correctly conveys the meaning
+                                    - Response time between {easy_threshold} and {good_threshold} seconds
+                                    - Demonstrates good understanding with reasonable recall speed
 
-                        {DIFFICULTY_GOOD}:
-                            Recommend if:
-                                - The answer correctly conveys the meaning
-                                - Response time between {easy_threshold} and {good_threshold} seconds
-                                - Demonstrates good understanding with reasonable recall speed
+                            {DIFFICULTY_EASY}:
+                                Recommend if:
+                                    - The answer correctly conveys the meaning
+                                    - Response time < {easy_threshold} seconds
+                                    - Shows quick and confident recall
 
-                        {DIFFICULTY_EASY}:
-                            Recommend if:
-                                - The answer correctly conveys the meaning
-                                - Response time < {easy_threshold} seconds
-                                - Shows quick and confident recall
+                        Additional Guidelines:
+                            Language Variations:
+                                - Accept common synonyms (e.g., 'gonna' for 'going to')
+                                - Allow for dialectal variations if meaning is preserved
+                                - Consider context when evaluating informal expressions
+                                - Recognize alternative grammatical forms
 
-                    Additional Guidelines:
-                        Language Variations:
-                            - Accept common synonyms (e.g., 'gonna' for 'going to')
-                            - Allow for dialectal variations if meaning is preserved
-                            - Consider context when evaluating informal expressions
-                            - Recognize alternative grammatical forms
+                            Feedback Approach:
+                                - Acknowledge correct meaning even if form differs
+                                - Provide standard form for reference when variations used
+                                - Include constructive guidance for improvement
+                                - Explain why variations are acceptable when relevant
 
-                        Feedback Approach:
-                            - Acknowledge correct meaning even if form differs
-                            - Provide standard form for reference when variations used
-                            - Include constructive guidance for improvement
-                            - Explain why variations are acceptable when relevant
+                            Multiple Answers:
+                                - All essential concepts must be present
+                                - Accept equivalent expressions for each concept
+                                - Consider context for meaning assessment
+                                - Allow for variation in expression order
 
-                        Multiple Answers:
-                            - All essential concepts must be present
-                            - Accept equivalent expressions for each concept
-                            - Consider context for meaning assessment
-                            - Allow for variation in expression order
+                        Example Applications:
+                            1. Variation in Form:
+                                User Answer: "gonna"
+                                Correct Answer: "going to"
+                                Evaluation: Correct (same meaning, informal variation)
+                                Recommendation: Based on time + "Consider standard form 'going to'"
 
-                    Example Applications:
-                        1. Variation in Form:
-                            User Answer: "gonna"
-                            Correct Answer: "going to"
-                            Evaluation: Correct (same meaning, informal variation)
-                            Recommendation: Based on time + "Consider standard form 'going to'"
+                            2. Semantic Equivalence:
+                                User Answer: "will not"
+                                Correct Answer: "won't"
+                                Evaluation: Correct (semantically equivalent expression)
+                                Recommendation: Based on time + "Alternative expression accepted"
 
-                        2. Semantic Equivalence:
-                            User Answer: "will not"
-                            Correct Answer: "won't"
-                            Evaluation: Correct (semantically equivalent expression)
-                            Recommendation: Based on time + "Alternative expression accepted"
+                            3. Incorrect Meaning:
+                                User Answer: "will"
+                                Correct Answer: "won't"
+                                Evaluation: Incorrect (opposite meaning)
+                                Recommendation: {DIFFICULTY_AGAIN}
 
-                        3. Incorrect Meaning:
-                            User Answer: "will"
-                            Correct Answer: "won't"
-                            Evaluation: Incorrect (opposite meaning)
-                            Recommendation: {DIFFICULTY_AGAIN}
+                        **Data Provided:**
+                            Card Content: {clean_content}
+                            Correct Answer(s): {formatted_answers}
+                            User's Answer: {self.llm_data.get("user_answer", "Not available")}
+                            Time Taken: {elapsed_time} seconds
 
-                    **Data Provided:**
-                        Card Content: {clean_content}
-                        Correct Answer(s): {formatted_answers}
-                        User's Answer: {self.llm_data.get("user_answer", "Not available")}
-                        Time Taken: {elapsed_time} seconds
-
-                    Please provide evaluation in JSON format:
-                    {{
-                        "evaluation": "Detailed assessment focusing on semantic accuracy and time",
-                        "recommendation": "{DIFFICULTY_AGAIN}, {DIFFICULTY_HARD}, {DIFFICULTY_GOOD}, {DIFFICULTY_EASY}",
-                        "answer": "The correct answer(s) and acceptable variations",
-                        "reference": "Additional helpful information including standard forms"
-                    }}
-                    """
+                        A difficulty recommendation string must be included exactly at the very end of the final answer as follows:
+                        {{
+                            "recommendation": "Again|Hard|Good|Easy"
+                        }}
+                        """
                 },
                 "question": {
                     "system": f"You are a helpful assistant. Always answer in {language}.",
@@ -737,8 +624,8 @@ Model settings changed:
                 }
             }
 
-            # 현재 메시지를 대화 기록에 추가
-            if request_type != "answer":  # answer type은 별도로 관리
+            # 현재 메시지를 대화 기록에 추가 (for request types other than answer)
+            if request_type != "answer":
                 if question:
                     self.conversation_history['messages'].append({
                         'role': 'user',
@@ -756,15 +643,15 @@ Model settings changed:
             return "Error creating LLM message", "Error creating LLM message"
 
     def process_answer(self):
-        """Calls the OpenAI API in a background thread to get the evaluation."""
+        """Calls the LLM API in a background thread to get the evaluation."""
         try:
-            # 드 변경 확인 및 대화 기록 초기화
+            # If card changed, reset conversation history
             card = mw.reviewer.card
             if card and card.id != self.current_card_id:
                 self.current_card_id = card.id
                 self.clear_conversation_history()
             
-            # 사용자 답변을 대화 기록에 추가
+            # Add user's answer to conversation history
             self.conversation_history['messages'].append({
                 'role': 'user',
                 'content': f"Answer: {self.llm_data.get('user_answer', 'Not available')}"
@@ -783,103 +670,47 @@ Model settings changed:
             
             response_text = self.call_llm_api(system_message, user_message_content)
             logger.debug(f"LLM Raw Response: {response_text}")
-
-            json_text = None
-            max_attempts = 3
-            for attempt in range(max_attempts):
-                json_text = self.extract_json_from_text(response_text)
-                if json_text:
-                    logger.debug(f"JSON extraction successful (Attempt: {attempt + 1}): {json_text}")
-                    break
-                logger.debug(f"JSON extraction failed (Attempt: {attempt + 1})")
             
-            if json_text:
-                try:
-                    response_json = json.loads(json_text)
-                    evaluation = response_json.get("evaluation", "No evaluation")
-                    recommendation = response_json.get("recommendation", "No recommendation")
-                    
-                    # Process answer as comma-separated list
-                    answer = response_json.get("answer", "")
-                    if answer:
-                        # Remove bullet points and split by newlines or commas
-                        answer_parts = []
-                        for part in re.split(r'[,\n]', answer):
-                            part = part.strip()
-                            if part:
-                                # Remove bullet points and other markers
-                                part = re.sub(r'^[•\-\*]\s*', '', part)
-                                answer_parts.append(part)
-                        answer = ', '.join(answer_parts)
-                    
-                    reference = response_json.get("reference", "")
-                    
-                    # 응답, 사용자 답변, 소요 시간 저장
-                    self.last_response = response_json
-                    self.last_user_answer = self.llm_data.get("user_answer", "")
-                    self.last_elapsed_time = self.llm_data.get("elapsed_time", "")
+            # Store the raw response
+            self.last_response = response_text
 
-                    # LLM의 응답을 대화 기록에 추가
-                    self.conversation_history['messages'].append({
-                        'role': 'assistant',
-                        'content': f"Evaluation: {evaluation}\nRecommendation: {recommendation}\nReference: {reference}"
-                    })
+            # Extract recommendation and create difficulty message
+            recommendation = self.extract_difficulty(response_text)
+            if recommendation:
+                logger.debug(f"추출된 난이도 추천: {recommendation}")
+                
+                window = self.get_answer_checker_window()
+                if window and hasattr(window, 'message_manager'):
+                    # Create and display difficulty message
+                    difficulty_message = window.message_manager.create_difficulty_message(recommendation)
+                    window.append_to_chat(difficulty_message)
+                    window.last_difficulty_message = difficulty_message
                     
-                    response = json.dumps({
-                        "evaluation": self.markdown_to_html(evaluation),
-                        "recommendation": self.markdown_to_html(recommendation),
-                        "answer": answer,
-                        "reference": self.markdown_to_html(reference)
-                    })
-                    QMetaObject.invokeMethod(
-                        self,
-                        "sendResponse",
-                        Qt.ConnectionType.QueuedConnection,
-                        Q_ARG(str, response)
-                    )
-                except json.JSONDecodeError as e:
-                    logger.error(f"Could not parse OpenAI response as JSON: {e}")
-                    showInfo("Could not parse OpenAI response as JSON. Please try asking for the answer again.")
-                    response = json.dumps({
-                        "evaluation": "Parsing error",
-                        "recommendation": None,
-                        "answer": "",
-                        "reference": ""
-                    })
-                    QMetaObject.invokeMethod(
-                        self,
-                        "sendResponse",
-                        Qt.ConnectionType.QueuedConnection,
-                        Q_ARG(str, response)
-                    )
-            else:
-                logger.error("Could not find JSON pattern")
-                showInfo("Could not find JSON pattern in OpenAI response. Please try asking for the answer again.")
-                response = json.dumps({
-                    "evaluation": "JSON pattern error",
-                    "recommendation": None,
-                    "answer": "",
-                    "reference": ""
-                })
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, response)
-                )
+                    # Execute automatic difficulty evaluation
+                    window.follow_llm_suggestion()
+                else:
+                    logger.debug("Answer Checker Window not ready for displaying messages")  # Changed from warning to debug
+
+            QMetaObject.invokeMethod(
+                self,
+                "sendResponse",
+                Qt.ConnectionType.QueuedConnection,
+                Q_ARG(str, response_text)
+            )
         except Exception as e:
             logger.exception("Error processing OpenAI API: %s", e)
-            response = json.dumps({
+            error_response = json.dumps({
                 "evaluation": "Error occurred",
                 "recommendation": "None",
                 "answer": "",
                 "reference": ""
             })
+            self.last_response = error_response
             QMetaObject.invokeMethod(
                 self,
                 "sendResponse",
                 Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, response)
+                Q_ARG(str, error_response)
             )
         finally:
             self._clear_llm_data()
@@ -912,155 +743,61 @@ Model settings changed:
                 'content': response
             })
             
-            # 응답 전송
-            response_json = json.dumps({"answer": response})
+            # 응답 직접 전송
             logger.debug(f"Sending response (truncated): {response[:200]}...")
             
             QMetaObject.invokeMethod(
                 self,
                 "sendQuestionResponse",
                 Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, response_json)
+                Q_ARG(str, response)
             )
             
         except Exception as e:
             logger.exception("Error processing additional question: %s", e)
-            error_json = json.dumps({"error": str(e)})
+            if answer_checker_window:
+                answer_checker_window.display_loading_animation(False)
             QMetaObject.invokeMethod(
                 self,
                 "sendQuestionResponse",
                 Qt.ConnectionType.QueuedConnection,
-                Q_ARG(str, error_json)
+                Q_ARG(str, str(e))
             )
-
-    def process_joke_request(self, card_content, card_answers):
-        """Handles a joke generation request."""
-        def thread_func():
-            try:
-                # 사용자 요청을 대화 기록에 추가
-                self.conversation_history['messages'].append({
-                    'role': 'user',
-                    'content': "Please tell me a joke about this card!"
-                })
-
-                system_message, user_message_content = self.create_llm_message(
-                    card_content, 
-                    card_answers, 
-                    None, 
-                    "joke"
-                )
-                
-                response = self.call_llm_api(system_message, user_message_content)
-                
-                # LLM 응응답을 대화 기록에 추가
-                self.conversation_history['messages'].append({
-                    'role': 'assistant',
-                    'content': f"Joke: {response}"
-                })
-
-                response_json = json.dumps({"joke": response})
-                
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendJokeResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, response_json)
-                )
-            except Exception as e:
-                logger.exception("Error generating joke: %s", e)
-                error_json = json.dumps({"error": str(e)})
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendJokeResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, error_json)
-                )
-
-        thread = threading.Thread(target=thread_func)
-        thread.start()
-
-    def process_edit_advice_request(self, card_content, card_answers):
-        """Handles a card edit advice request."""
-        def thread_func():
-            try:
-                # 사용자 요청을 대화 기록에 추가
-                self.conversation_history['messages'].append({
-                    'role': 'user',
-                    'content': "Please provide advice for improving this card."
-                })
-
-                system_message, user_message_content = self.create_llm_message(
-                    card_content, 
-                    card_answers, 
-                    None, 
-                    "edit_advice"
-                )
-                
-                response = self.call_llm_api(system_message, user_message_content)
-                
-                # LLM 응답을 대화 기록에 추가
-                self.conversation_history['messages'].append({
-                    'role': 'assistant',
-                    'content': f"Edit Advice: {response}"
-                })
-
-                response_json = json.dumps({"edit_advice": response})
-                
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendEditAdviceResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, response_json)
-                )
-            except Exception as e:
-                logger.exception("Error generating card edit advice: %s", e)
-                error_json = json.dumps({"error": str(e)})
-                QMetaObject.invokeMethod(
-                    self,
-                    "sendEditAdviceResponse",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, error_json)
-                )
-
-        thread = threading.Thread(target=thread_func)
-        thread.start()
 
     def extract_json_from_text(self, text):
         """Extracts the last JSON part from the text."""
         try:
-            # Remove code block markers and clean text
-            text = self._clean_text(text)
+            if not text:
+                return None
+
+            # 1. 코드 블록 마커가 있는 JSON 찾기
+            code_block_pattern = r'```(?:json)?\s*({[\s\S]*?})\s*```'
+            code_block_matches = re.finditer(code_block_pattern, text, re.IGNORECASE)
             
-            # Try to find JSON block with code block markers first
-            json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', text)
-            if json_match:
+            for match in code_block_matches:
                 try:
-                    json_str = json_match.group(1)
-                    json_str = self._normalize_json_string(json_str)
+                    json_str = match.group(1).strip()
                     parsed = json.loads(json_str)
                     if self._validate_json_fields(parsed):
                         return json_str
-                except:
-                    pass
+                except json.JSONDecodeError:
+                    continue
 
-            # If that fails, try to find any JSON-like structure
-            try:
-                # Find the last occurrence of a JSON-like structure
-                json_matches = list(re.finditer(r'{[\s\S]*?}', text))
-                if json_matches:
-                    for match in reversed(json_matches):
-                        try:
-                            json_str = match.group(0)
-                            json_str = self._normalize_json_string(json_str)
-                            parsed = json.loads(json_str)
-                            if self._validate_json_fields(parsed):
-                                return json_str
-                        except:
-                            continue
-            except:
-                pass
+            # 2. 일반 JSON 객체 찾기
+            json_pattern = r'({[^{}]*"recommendation"\s*:\s*"[^"]+"})'
+            json_matches = list(re.finditer(json_pattern, text))
+            
+            for match in reversed(json_matches):
+                try:
+                    json_str = match.group(1).strip()
+                    parsed = json.loads(json_str)
+                    if self._validate_json_fields(parsed):
+                        return json_str
+                except json.JSONDecodeError:
+                    continue
             
             return None
+
         except Exception as e:
             logger.error(f"Error in extract_json_from_text: {str(e)}")
             return None
@@ -1174,7 +911,7 @@ Model settings changed:
             
             if not mw.reviewer or not mw.reviewer.card:
                 logger.error("현재 리뷰 중인 카드가 없음")
-                raise CardContentError("현재 리뷰 중인 카드가 없습니다.")
+                raise CardContentError("There is no card currently under review.")
 
             card = mw.reviewer.card
             note = card.note()
@@ -1210,14 +947,14 @@ Model settings changed:
                 'note_type': getattr(note, 'model', lambda: {})().get('name') if 'note' in locals() else None,
                 'card_ord': locals().get('card_ord')
             })
-            self._show_error_message(f"카드 콘텐츠 처리 중 오류가 발생했습니다: {str(e)}")
+            self._show_error_message(f"An error occurred while processing the card content: {str(e)}")
             return None, None, None
 
     def _process_cloze_card(self, note, card_ord):
         """Cloze 카드 처리"""
         try:
             if 'Text' not in note:
-                raise CardContentError("Cloze 카드에 'Text' 필드가 없습니다.")
+                raise CardContentError("The 'Text' field is missing in the Cloze note.")
 
             text = note['Text']
             soup = BeautifulSoup(text, 'html.parser')
@@ -1226,17 +963,26 @@ Model settings changed:
             self._remove_tags(soup, ['script', 'style'])
             self._remove_fsrs_status(soup)
             
-            # 텍스트 추출
-            content = self._extract_all_text(soup)
-            if not content.strip():
-                raise CardContentError("카드 내용이 비어있습니다.")
+            # 현재 카드의 cloze 번호에 해당하는 정답 추출
+            cloze_pattern = re.compile(r'{{c' + str(card_ord + 1) + r'::(.*?)}}')
+            matches = cloze_pattern.findall(text)
+            if not matches:
+                raise CardContentError(f"Could not find Cloze {card_ord + 1} blank.")
+            
+            # 전체 내용은 그대로 유지
+            content = soup.get_text(separator=' ', strip=True)
+            if not content:
+                raise CardContentError("Card content is empty.")
 
-            return content, [], card_ord
+            # 현재 cloze의 정답만 반환
+            answers = [match.strip() for match in matches]
+            
+            return content, answers, card_ord
 
         except CardContentError:
             raise
         except Exception as e:
-            raise CardContentError(f"Cloze 카드 처리 중 오류가 발생했습니다: {str(e)}")
+            raise CardContentError(f"An error occurred while processing the Cloze card: {str(e)}")
 
     def _process_basic_card(self, card):
         """기본 카드 처리"""
@@ -1245,22 +991,23 @@ Model settings changed:
             answers = self._extract_answer(card)
             
             if not question.strip():
-                raise CardContentError("질문 내용이 비어있습니다.")
+                raise CardContentError("Question content is empty.")
             if not answers:
-                raise CardContentError("답변 내용이 비어있습니다.")
+                raise CardContentError("Answer content is empty.")
 
             return question, answers, card.ord
 
         except CardContentError:
             raise
         except Exception as e:
-            raise CardContentError(f"기본 카드 처리 중 오류가 발생했습니다: {str(e)}")
+            raise CardContentError(f"An error occurred while processing the basic card: {str(e)}")
 
     def _extract_question(self, card):
         """Extract question from basic card"""
-        question_soup = BeautifulSoup(card.q(), 'html.parser')
+        question_html = card.q()
+        question_soup = BeautifulSoup(question_html, 'html.parser')
         self._remove_tags(question_soup, ['style', 'script'])
-        return question_soup.get_text(separator=' ', strip=True)
+        return str(question_soup)
 
     def _extract_answer(self, card):
         """Extract answer from basic card"""
@@ -1348,38 +1095,76 @@ Model settings changed:
                 logger.debug(f"예외 타입: {type(message).__name__}, 도움말: {help_text}")
             else:
                 error_message = str(message)
-                help_text = "나중에 다시 시도해 주세요."
+                help_text = "Please try again later."
                 logger.debug("일반 에러 메시지 처리")
 
-            error_html = f"""
-            <div class="system-message-container error">
-                <div class="system-message">
-                    <p class="error-message" style="color: #e74c3c; margin-bottom: 8px;">{error_message}</p>
-                    <p class="help-text" style="color: #666; font-size: 0.9em;">{help_text}</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            
-            if answer_checker_window and answer_checker_window.web_view:
-                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + error_html)
+            if answer_checker_window:
+                answer_checker_window.show_error_message(error_message, help_text)
                 logger.info("에러 메시지 UI 업데이트 완료")
                 
         except Exception as e:
             log_error(e, {'original_message': message})
             logger.error(f"에러 메시지 표시 중 오류 발생: {str(e)}")
-            # 기본 에러 메시지 표시
-            basic_error_html = f"""
-            <div class="system-message-container error">
-                <div class="system-message">
-                    <p style="color: #e74c3c;">오류가 발생했습니다. 나중에 다시 시도해 주세요.</p>
-                </div>
-                <div class="message-time">{datetime.now().strftime("%p %I:%M")}</div>
-            </div>
-            """
-            if answer_checker_window and answer_checker_window.web_view:
-                answer_checker_window.web_view.setHtml(answer_checker_window.default_html + basic_error_html)
+            if answer_checker_window:
+                answer_checker_window.show_error_message(
+                    "An error occurred. Please try again later."
+                )
                 logger.info("기본 에러 메시지 UI 업데이트 완료")
+
+    def handle_response_error(self, error_message, error_detail):
+        """Handles errors during response processing"""
+        logger.error(f"{error_message}: {error_detail}")
+        if answer_checker_window:
+            answer_checker_window.show_error_message(error_message)
+        QTimer.singleShot(0, lambda: showInfo(error_message))
+
+    def update_config(self, new_settings):
+        """Update bridge configuration with new settings"""
+        try:
+            # Update thresholds
+            self.easy_threshold = int(new_settings.get("easyThreshold", 5))
+            self.good_threshold = int(new_settings.get("goodThreshold", 40))
+            self.hard_threshold = int(new_settings.get("hardThreshold", 60))
+            
+            self.system_prompt = new_settings.get("systemPrompt", "You are a helpful assistant.")
+            
+            # Update the LLM provider using the new settings
+            self.update_llm_provider(new_settings)
+            
+            # Clear conversation history for fresh start
+            self.clear_conversation_history()
+            
+            logger.info(f"설정이 성공적으로 업데이트되었습니다. (제공자: {new_settings.get('providerType', 'openai')})")
+            
+        except Exception as e:
+            logger.error(f"설정 업데이트 중 오류 발생: {str(e)}")
+            raise
+
+    def extract_difficulty(self, llm_response: str) -> str:
+        """
+        auto_difficulty.py의 extract_difficulty 함수를 사용하여 난이도를 추출합니다.
+        """
+        return extract_difficulty(llm_response)
+
+    def get_last_response(self) -> str:
+        """마지막 LLM 응답을 반환합니다."""
+        return self.last_response
+
+    def get_elapsed_time(self) -> float:
+        """답변에 걸린 시간을 반환합니다."""
+        return self.elapsed_time if self.elapsed_time is not None else 0.0
+
+    def set_answer_checker_window(self, window) -> None:
+        """AnswerCheckerWindow 참조를 설정합니다."""
+        self._answer_checker_window = window
+        if window:
+            logger.debug("Answer Checker Window reference set successfully")
+        else:
+            logger.debug("Answer Checker Window reference cleared")
+
+    def get_answer_checker_window(self):
+        """Returns the current AnswerCheckerWindow reference"""
+        return self._answer_checker_window
 
 logger.info("Bridge initialized")
 
