@@ -32,26 +32,25 @@
 
 ---
 
-## 🎥 Demo (Video & Screenshots)
+## 🎥 Demo (GIFs)
 
-### Demonstration Video
-
-📹 
+### 1. How to open MyAnswerChecker
 
 
-https://github.com/user-attachments/assets/c1b3f63e-c374-45fa-be0a-dd17881fd12d
+![how_to_start](https://github.com/user-attachments/assets/60d70790-bf2a-46fd-8baa-afbb364ddd89)
 
 
-### Screenshots
+### 2. Answering a card & chatting with AI
 
-* Answer evaluation interface:
-  `![Answer Check](bandicam.2025-08-19-14-38-21-125.png)`
-* Conversation mode:
-  `![Conversation](bandicam.2025-08-19-14-38-11-031.png)`
-* Difficulty settings UI:
-  `![Difficulty Settings](bandicam.2025-08-19-14-38-25-091.png)`
-* General settings (temperature, prompt):
-  `![General Settings](bandicam.2025-08-19-14-38-29-305.png)`
+![question-answer1](https://github.com/user-attachments/assets/4874475a-01ef-4e85-a659-51d0214601d8)
+
+*Submit an answer, receive AI feedback, then continue asking follow-up questions.*
+
+### 3. Accepting AI rating & moving to next card
+
+![gotonextcard](https://github.com/user-attachments/assets/cb1663ca-5e18-44bd-9c85-4c0d5c50cb79)
+
+*Press **Enter on empty input** → accept AI’s suggested difficulty → automatically go to the next card.*
 
 ---
 
@@ -86,7 +85,9 @@ https://github.com/user-attachments/assets/c1b3f63e-c374-45fa-be0a-dd17881fd12d
 
 ### API Settings
 
-* **Provider**: Choose OpenAI-compatible or Gemini.
+* **Provider**: Choose OpenAI-compatible or Gemini. You can freely switch models here. Recommended models are gpt-5-nano (for OpenAI-compatible mode) and gemini-2.5-flash-lite.
+* Get your API keys at [OpenAI Platform](https://platform.openai.com/api-keys) / [Google AI Studio](https://aistudio.google.com/apikey)
+
 * **Custom Base URL**: Use alternative API endpoints if needed.
 * **API Key**: Enter securely.
 
