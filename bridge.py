@@ -63,11 +63,23 @@ os.makedirs(addon_dir, exist_ok=True)
 
 # Create a logger
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
-# Create a file handler
-file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
-file_handler.setLevel(logging.DEBUG)
+# Only attach a file handler when debug logging is enabled in current settings
+_qsettings = QSettings("LLM_response_evaluator", "Settings")
+_debug_flag = _qsettings.value("debug_logging", False)
+try:
+    if isinstance(_debug_flag, str):
+        _debug_flag = _debug_flag.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        _debug_flag = bool(_debug_flag)
+except Exception:
+    _debug_flag = False
+
+file_handler = None
+if _debug_flag:
+    file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+    file_handler.setLevel(logging.DEBUG)
 
 # Create formatters
 debug_formatter = logging.Formatter(
@@ -94,12 +106,12 @@ class ErrorLogFilter(logging.Filter):
             record.stack_trace = traceback.format_stack()
         return True
 
-# Add formatter and filter to handler
-file_handler.setFormatter(debug_formatter)
-file_handler.addFilter(ErrorLogFilter())
-
-# Add the handler to the logger
-logger.addHandler(file_handler)
+if file_handler:
+    # Add formatter and filter to handler
+    file_handler.setFormatter(debug_formatter)
+    file_handler.addFilter(ErrorLogFilter())
+    # Add the handler to the logger
+    logger.addHandler(file_handler)
 
 def log_error(e, context=None):
     """상세한 에러 로깅을 위한 유틸리티 함수"""
@@ -1226,6 +1238,62 @@ class Bridge(QObject):
             # Update the LLM provider using the new settings
             self.update_llm_provider(new_settings)
             
+            # Honor debug logging setting for this module's logger and handlers
+            debug_logging = bool(new_settings.get("debug_logging", False))
+            desired_level = logging.DEBUG if debug_logging else logging.INFO
+            try:
+                logger.setLevel(desired_level)
+                for h in logger.handlers:
+                    try:
+                        h.setLevel(desired_level)
+                    except Exception:
+                        pass
+                # Dynamically add/remove file handler based on debug flag
+                # Identify existing file handlers targeting our log file
+                existing_file_handlers = []
+                for h in list(logger.handlers):
+                    try:
+                        if isinstance(h, logging.FileHandler) and getattr(h, 'baseFilename', None) == log_file_path:
+                            existing_file_handlers.append(h)
+                    except Exception:
+                        continue
+
+                if debug_logging:
+                    # Add file handler if not present
+                    if not existing_file_handlers:
+                        fh = logging.FileHandler(log_file_path, encoding='utf-8')
+                        fh.setLevel(logging.DEBUG)
+                        try:
+                            fh.setFormatter(debug_formatter)
+                            fh.addFilter(ErrorLogFilter())
+                        except Exception:
+                            pass
+                        logger.addHandler(fh)
+                    else:
+                        # Ensure existing handler(s) have proper level/formatter
+                        for fh in existing_file_handlers:
+                            try:
+                                fh.setLevel(logging.DEBUG)
+                                fh.setFormatter(debug_formatter)
+                            except Exception:
+                                pass
+                else:
+                    # Remove and close our file handlers when debug is off
+                    for fh in existing_file_handlers:
+                        try:
+                            logger.removeHandler(fh)
+                            try:
+                                fh.close()
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+
+                logger.debug(f"Logger updated. Level: {'DEBUG' if debug_logging else 'INFO'} | File handler: {'ON' if debug_logging else 'OFF'}")
+            except Exception:
+                # Do not break settings update due to logging adjustments
+                pass
+
             # Clear conversation history for fresh start
             self.clear_conversation_history()
             

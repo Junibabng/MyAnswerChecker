@@ -85,9 +85,17 @@ class SettingsManager:
             for key, default_value in current.items():
                 value = self._settings.value(key, default_value)
                 
-                # 타입 변환
+                # 타입 변환 (특히 bool은 문자열 'false'가 True로 캐스팅되는 문제를 방지)
                 if isinstance(default_value, bool):
-                    value = bool(value)
+                    if isinstance(value, bool):
+                        pass
+                    elif isinstance(value, (int, float)):
+                        value = bool(value)
+                    elif isinstance(value, str):
+                        value_lower = value.strip().lower()
+                        value = value_lower in ("1", "true", "yes", "on")
+                    else:
+                        value = bool(value)
                 elif isinstance(default_value, int):
                     value = int(value)
                 elif isinstance(default_value, float):

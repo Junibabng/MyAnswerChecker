@@ -52,9 +52,20 @@ log_file_path = os.path.join(addon_dir, 'MyAnswerChecker_debug.log')
 os.makedirs(addon_dir, exist_ok=True)
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
-if not logger.handlers:
+# Attach a file handler only when debug logging is enabled
+_qsettings = QSettings("LLM_response_evaluator", "Settings")
+_debug_flag = _qsettings.value("debug_logging", False)
+try:
+    if isinstance(_debug_flag, str):
+        _debug_flag = _debug_flag.strip().lower() in ("1", "true", "yes", "on")
+    else:
+        _debug_flag = bool(_debug_flag)
+except Exception:
+    _debug_flag = False
+
+if _debug_flag and not any(isinstance(h, logging.FileHandler) for h in logger.handlers):
     file_handler = logging.FileHandler(log_file_path)
     file_handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -78,6 +89,31 @@ DIFFICULTY_AGAIN = "Again"
 DIFFICULTY_HARD = "Hard"
 DIFFICULTY_GOOD = "Good"
 DIFFICULTY_EASY = "Easy"
+
+class _MainLogObserver:
+    def update_config(self, settings: Dict[str, Any]) -> None:
+        try:
+            debug_logging = bool(settings.get("debug_logging", False))
+            desired_level = logging.DEBUG if debug_logging else logging.INFO
+            logger.setLevel(desired_level)
+
+            # Ensure we have or don't have a FileHandler accordingly
+            file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+            if debug_logging and not file_handlers:
+                fh = logging.FileHandler(log_file_path)
+                fh.setLevel(logging.DEBUG)
+                fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+                logger.addHandler(fh)
+            elif not debug_logging and file_handlers:
+                for h in file_handlers:
+                    try:
+                        logger.removeHandler(h)
+                        h.close()
+                    except Exception:
+                        pass
+        except Exception as e:
+            # Avoid breaking settings flow due to logging adjustments
+            logger.error(f"Failed to update main logger from settings: {e}")
 
 class LLMProvider(ABC):
     @abstractmethod
@@ -116,6 +152,11 @@ def initialize_addon() -> None:
         # 브릿지 초기화
         if bridge is None:
             bridge = Bridge()
+            # Register Bridge as observer of settings changes
+            try:
+                settings_manager.add_observer(bridge)
+            except Exception:
+                pass
             
         # Answer Checker Window 초기화
         if answer_checker_window is None:
@@ -126,6 +167,12 @@ def initialize_addon() -> None:
             except Exception:
                 pass
             
+        # Ensure main logger reacts to settings changes
+        try:
+            settings_manager.add_observer(_MainLogObserver())
+        except Exception:
+            pass
+
         logger.info("Addon initialized successfully")
     except Exception as e:
         logger.exception("Error initializing addon: %s", e)
@@ -344,15 +391,30 @@ def load_settings():
     return {key: settings.value(key, default) for key, default in defaults.items()}
 
 def load_global_settings():
-    """Loads global settings into mw.llm_addon_settings"""
-    settings = QSettings("LLM_response_evaluator", "Settings")
-    mw.llm_addon_settings = load_settings()
-    
-    # Set logging level based on settings
-    debug_logging = settings.value("debug_logging", False, type=bool)
-    logger.setLevel(logging.DEBUG if debug_logging else logging.INFO)
-    
-    logger.debug("Global settings loaded")
+    """Loads global settings and synchronize logging according to settings_manager"""
+    settings = settings_manager.load_settings()
+    mw.llm_addon_settings = settings
+
+    debug_logging = bool(settings.get("debug_logging", False))
+    desired_level = logging.DEBUG if debug_logging else logging.INFO
+    logger.setLevel(desired_level)
+
+    # Manage file handler dynamically
+    file_handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+    if debug_logging and not file_handlers:
+        fh = logging.FileHandler(log_file_path)
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        logger.addHandler(fh)
+    elif not debug_logging and file_handlers:
+        for h in file_handlers:
+            try:
+                logger.removeHandler(h)
+                h.close()
+            except Exception:
+                pass
+
+    logger.debug("Global settings loaded and logging synchronized")
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
