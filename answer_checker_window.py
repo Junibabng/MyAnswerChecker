@@ -372,6 +372,39 @@ class AnswerCheckerWindow(QDialog):
             # 2) 브릿지의 대화 기록 초기화
             if hasattr(self.bridge, "clear_conversation_history"):
                 self.bridge.clear_conversation_history()
+                # 같은 카드라도 재진입 시 새로 만난 것처럼 동작하도록 브릿지 상태 초기화
+                try:
+                    if hasattr(self.bridge, "current_card_id"):
+                        self.bridge.current_card_id = None
+                    if hasattr(self.bridge, "last_user_answer"):
+                        self.bridge.last_user_answer = None
+                    if hasattr(self.bridge, "last_response"):
+                        self.bridge.last_response = None
+                    if hasattr(self.bridge, "is_processing"):
+                        self.bridge.is_processing = False
+                    # 타이머 및 경과 시간 초기화
+                    try:
+                        if hasattr(self.bridge, "stop_timer"):
+                            self.bridge.stop_timer()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self.bridge, "timer") and getattr(self.bridge, "timer") is not None:
+                            if getattr(self.bridge.timer, "isActive", lambda: False)():
+                                self.bridge.timer.stop()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self.bridge, "start_time"):
+                            self.bridge.start_time = 0.0
+                        if hasattr(self.bridge, "elapsed_time"):
+                            self.bridge.elapsed_time = 0.0
+                        if hasattr(self.bridge, "last_elapsed_time"):
+                            self.bridge.last_elapsed_time = None
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
 
             # 3) 내부 상태 및 큐 초기화
             self.last_response = None
@@ -382,16 +415,17 @@ class AnswerCheckerWindow(QDialog):
             self.is_processing = False
             self.is_initial_answer = True
             self.welcome_message_shown = False
-
-            # 4) WebView 관련 플래그 초기화 및 이벤트/채널 정리
+            # 질문 중복 억제 타이밍 초기화 (같은 카드 즉시 반응하도록)
+            self.last_question_time = 0
+            # 같은 카드 중복 준비 스킵을 피하기 위해 마지막 카드 ID 초기화
             try:
-                # loadFinished 중복 연결을 방지하기 위해 기존 연결 해제 시도
-                self.web_view.loadFinished.disconnect(self._on_webview_load_finished)
+                self.last_card_id = None
             except Exception:
                 pass
 
-            # DOM 클리어 (가능한 경우)
+            # 4) WebView 처리: 준비되어 있으면 DOM만 정리, 아니면 재초기화
             if getattr(self, 'is_webview_ready', False):
+                # DOM 클리어
                 try:
                     self.web_view.page().runJavaScript("""
                         (function() {
@@ -402,20 +436,49 @@ class AnswerCheckerWindow(QDialog):
                     """)
                 except Exception:
                     pass
-
-            # 플래그 리셋
-            with self.initialization_lock:
-                self.is_webview_initialized = False
-                self.is_webview_loading = False
-                self.is_webview_ready = False
-                self.initialization_event.clear()
-
-            # 5) WebView 재초기화
-            self.initialize_webview()
+            else:
+                # 플래그 리셋 후 재초기화
+                try:
+                    with self.initialization_lock:
+                        self.is_webview_initialized = False
+                        self.is_webview_loading = False
+                        self.is_webview_ready = False
+                        self.initialization_event.clear()
+                except Exception:
+                    pass
+                # loadFinished 중복 연결 해제 시도 후 초기화
+                try:
+                    self.web_view.loadFinished.disconnect(self._on_webview_load_finished)
+                except Exception:
+                    pass
+                self.initialize_webview()
 
             # 6) 입력 필드 초기화 및 포커스
             self.input_field.clear()
             self.input_field.setFocus()
+
+            # 7) 현재 카드가 있다면 강제로 한 번 더 로딩되도록 처리
+            try:
+                if mw.state == "review" and getattr(mw.reviewer, "card", None):
+                    # main의 중복 준비 억제 가드도 해제하여 동일 카드 재준비 허용
+                    try:
+                        from . import main as _addon_main
+                        setattr(_addon_main, "_LAST_PREPARED_CARD_ID", None)
+                    except Exception:
+                        pass
+                    current_card = mw.reviewer.card
+                    # 리뷰어에 현재 질문을 강제로 다시 표시(비동기)하여 훅이 트리거되도록 함
+                    try:
+                        QTimer.singleShot(0, lambda: mw.reviewer._showQuestion())
+                    except Exception:
+                        pass
+                    # WebView가 준비될 시간을 조금 더 주고 카드 준비를 트리거
+                    QTimer.singleShot(300, lambda: self.prepare_card_(current_card))
+                else:
+                    # 리뷰 상태가 아니면 초기 화면(웰컴/기본 메시지) 유지
+                    pass
+            except Exception:
+                pass
 
             logger.info("UI reset completed")
         except Exception as e:
