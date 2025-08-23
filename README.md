@@ -74,7 +74,7 @@
 
 ## 🛠️ Installation
 
-1. Download the latest release from [AnkiWeb](https://ankiweb.net/) or GitHub Releases.
+1. Download the latest release from [AnkiWeb](https://ankiweb.net/shared/info/1043318428) or GitHub Releases.
 2. In Anki: **Tools → Add-ons → Install from file…**
 3. Select the `.ankiaddon` file.
 4. Restart Anki.
